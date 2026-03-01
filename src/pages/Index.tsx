@@ -100,28 +100,34 @@ const Index = () => {
   });
 
   // ── Transfer request (approved: add order to my route) ─────────────────────
+  // Use a ref so handleOrderApproved always reads the current driver even if
+  // the callback was captured when driver was still null (stale closure fix).
+  const driverRef = useRef(driver);
+  useEffect(() => { driverRef.current = driver; }, [driver]);
+
   const handleOrderApproved = useCallback((order: IFoodOrder, gpsLat: number, gpsLng: number) => {
-    if (!driver) return;
+    const currentDriver = driverRef.current;
+    if (!currentDriver) return;
     setCourierRoutes(prev => {
-      const destIdx = prev.findIndex(r => r.name.toLowerCase() === driver.name.toLowerCase());
+      const destIdx = prev.findIndex(r => r.name.toLowerCase() === currentDriver.name.toLowerCase());
       if (destIdx >= 0) {
         const updated = [...prev];
         updated[destIdx] = { ...updated[destIdx], startLat: gpsLat, startLng: gpsLng, orders: [...updated[destIdx].orders, order] };
         return updated;
       }
-      const newRoute: CourierRoute = { id: crypto.randomUUID(), name: driver.name, orders: [order], startLat: gpsLat, startLng: gpsLng, createdAt: new Date().toISOString() };
+      const newRoute: CourierRoute = { id: crypto.randomUUID(), name: currentDriver.name, orders: [order], startLat: gpsLat, startLng: gpsLng, createdAt: new Date().toISOString() };
       return [...prev, newRoute];
     });
     // Switch to the driver's own route tab so the order is immediately visible
     setTimeout(() => {
       setCourierRoutes(prev => {
-        const ownRoute = prev.find(r => r.name.toLowerCase() === driver.name.toLowerCase());
+        const ownRoute = prev.find(r => r.name.toLowerCase() === currentDriver.name.toLowerCase());
         if (ownRoute) setActiveTab(ownRoute.id);
         return prev;
       });
     }, 100);
     toast.success("Pedido transferido com sucesso! Confira sua rota.");
-  }, [driver]);
+  }, []); // deps intentionally empty — reads driverRef.current to avoid stale closure
 
   const { incomingRequest, outgoingPending, requestTransfer, approveIncoming, rejectIncoming } = useTransferRequests({
     myName: isDriver ? (driver?.name ?? null) : null,
@@ -965,6 +971,7 @@ const Index = () => {
       {/* Incoming transfer request popup (owner/receiver) */}
       {incomingRequest && (
         <HoldTransferModal
+          key={incomingRequest.id}
           order={incomingRequest.order_data}
           fromDriverName={incomingRequest.current_owner_name}
           toDriverName={incomingRequest.requester_name}
