@@ -104,21 +104,31 @@ Deno.serve(async (req) => {
         });
         if (oRes.status === 200) {
           const o = await safeJson(oRes);
-          if (!o?.id) continue;
+          const id = o.id || o.ID;
+          if (!id) continue;
+          
+          const delivery = o.delivery || o.DELIVERY || {};
+          const customer = o.customer || o.CUSTOMER || {};
+          const address = delivery?.deliveryAddress || delivery?.DELIVERYADDRESS || {};
+          const coords = address?.coordinates || address?.COORDINATES || {};
+          const totals = o.total || o.TOTAL || {};
+          const paymentsArr = o.payments || o.PAYMENTS || [];
+          const itemsArr = o.items || o.ITEMS || [];
+
           orders.push({
-            id: o.id,
-            displayId: o.displayId || o.id.slice(0, 8),
-            customerName: o.customer?.name || "Cliente",
-            customerPhone: o.customer?.phone?.number || "",
-            address: formatAddress(o.delivery?.deliveryAddress),
-            lat: o.delivery?.deliveryAddress?.coordinates?.latitude || 0,
-            lng: o.delivery?.deliveryAddress?.coordinates?.longitude || 0,
-            total: o.total?.orderAmount || 0,
-            paymentMethod: o.payments?.[0]?.methods?.[0]?.type || "ONLINE",
-            items: o.items?.map(i => `${i.quantity}x ${i.name}`).join(", ") || "",
-            status: o.orderStatus || "CONFIRMED",
-            createdAt: o.createdAt,
-            deliveryCode: o.delivery?.deliveryCode || "",
+            id: id,
+            displayId: o.displayId || o.DISPLAYID || id.slice(0, 8),
+            customerName: customer?.name || customer?.NAME || "Cliente",
+            customerPhone: customer?.phone?.number || customer?.PHONE?.NUMBER || "",
+            address: formatAddress(address) || formatAddress(o.DELIVERY?.DELIVERYADDRESS) || "",
+            lat: coords?.latitude || coords?.LATITUDE || 0,
+            lng: coords?.longitude || coords?.LONGITUDE || 0,
+            total: totals?.orderAmount || totals?.ORDERAMOUNT || 0,
+            paymentMethod: paymentsArr?.[0]?.methods?.[0]?.type || paymentsArr?.[0]?.METHODS?.[0]?.TYPE || "ONLINE",
+            items: itemsArr.map((i: any) => `${i.quantity || i.QUANTITY}x ${i.name || i.NAME}`).join(", ") || "",
+            status: o.orderStatus || o.ORDERSTATUS || "CONFIRMED",
+            createdAt: o.createdAt || o.CREATEDAT,
+            deliveryCode: delivery?.deliveryCode || delivery?.DELIVERYCODE || "",
             raw: o,
           });
         } else { await oRes.text(); }
