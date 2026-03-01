@@ -180,21 +180,50 @@ const Index = () => {
 
   // ── Courier route assignment ──
   const handleAssignCourier = (courierName: string) => {
-    const routeOrders = selectedOrders.map((o) => ({ ...o, confirmed: false }));
-    const newRoute: CourierRoute = {
-      id: Date.now().toString(),
-      name: courierName,
-      orders: routeOrders,
-      createdAt: new Date().toISOString(),
-    };
-    setCourierRoutes((prev) => [...prev, newRoute]);
+    if (selectedOrders.length === 0) return;
+
+    const ordersToAssign = selectedOrders.map((o) => ({ ...o, confirmed: false }));
+    let assignedRouteId: string;
+
+    setCourierRoutes((prev) => {
+      // Find if this courier already has an active route
+      const existingRouteIndex = prev.findIndex(r => r.name.toLowerCase() === courierName.toLowerCase());
+
+      if (existingRouteIndex >= 0) {
+        // Merge into existing route
+        const newRoutes = [...prev];
+        const existingRoute = newRoutes[existingRouteIndex];
+        
+        // Filter out orders that are already in the route to avoid duplicates
+        const existingOrderIds = new Set(existingRoute.orders.map(o => o.id));
+        const newUniqueOrders = ordersToAssign.filter(o => !existingOrderIds.has(o.id));
+
+        newRoutes[existingRouteIndex] = {
+          ...existingRoute,
+          orders: [...existingRoute.orders, ...newUniqueOrders],
+        };
+        assignedRouteId = existingRoute.id;
+        return newRoutes;
+      } else {
+        // Create new route
+        const newRoute: CourierRoute = {
+          id: crypto.randomUUID(),
+          name: courierName,
+          orders: ordersToAssign,
+          createdAt: new Date().toISOString(),
+        };
+        assignedRouteId = newRoute.id;
+        return [...prev, newRoute];
+      }
+    });
+
     // Remove assigned orders from main queue
     const assignedIds = new Set(selectedOrders.map((o) => o.id));
     setOrders((prev) => prev.filter((o) => !assignedIds.has(o.id)));
     setSelectedIds(new Set());
     setShowAssignModal(false);
-    setActiveTab(newRoute.id);
-    toast.success(`Rota atribuída a ${courierName}!`);
+    setActiveTab(assignedRouteId); // Set active tab to the newly assigned/updated route
+    toast.success(`${ordersToAssign.length} pedido(s) atribuído(s) para ${courierName}!`);
   };
 
   const handleCloseCourierRoute = (routeId: string) => {
@@ -395,6 +424,7 @@ const Index = () => {
                       selected={selectedIds.has(order.id)}
                       onToggleSelect={toggleSelect}
                       onConfirm={handleConfirmOrderInQueue}
+                      showConfirmation={false}
                     />
                   ))}
                 </div>

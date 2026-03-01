@@ -11,9 +11,10 @@ interface OrderCardProps {
   selected?: boolean;
   onToggleSelect?: (id: string) => void;
   onConfirm?: (orderId: string, code: string) => void;
+  showConfirmation?: boolean;
 }
 
-export function OrderCard({ order, index, selectable, selected, onToggleSelect, onConfirm }: OrderCardProps) {
+export function OrderCard({ order, index, selectable, selected, onToggleSelect, onConfirm, showConfirmation = false }: OrderCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [confirmCode, setConfirmCode] = useState(order.confirmationCode || '');
   const [confirming, setConfirming] = useState(false);
@@ -21,6 +22,12 @@ export function OrderCard({ order, index, selectable, selected, onToggleSelect, 
   const handleConfirm = async () => {
     if (!confirmCode.trim()) {
       toast.error("Informe o código de confirmação!");
+      return;
+    }
+
+    // Validação estrita se a API enviou o código de entrega
+    if (order.deliveryCode && confirmCode.trim() !== order.deliveryCode) {
+      toast.error("Código inválido!", { description: "Verifique o código com o cliente." });
       return;
     }
 
