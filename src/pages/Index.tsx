@@ -380,7 +380,12 @@ const Index = () => {
       .channel("no-contact-realtime")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "no_contact_orders" }, payload => {
         const nc = payload.new as unknown as NoContactOrder;
-        setNoContactOrders(prev => [nc, ...prev.filter(x => x.order_id !== nc.order_id)]);
+        // Replace temp optimistic entry or add new
+        setNoContactOrders(prev => [nc, ...prev.filter(x => x.order_id !== nc.order_id && !x.id.startsWith('temp-'))]);
+      })
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "no_contact_orders" }, payload => {
+        const nc = payload.new as unknown as NoContactOrder;
+        setNoContactOrders(prev => prev.map(x => x.id === nc.id || x.order_id === nc.order_id ? nc : x));
       })
       .on("postgres_changes", { event: "DELETE", schema: "public", table: "no_contact_orders" }, payload => {
         const id = (payload.old as any).id;
@@ -516,14 +521,43 @@ const Index = () => {
   // and inserts into no_contact_orders so any driver can retry.
   const handleNoContact = async (routeId: string, order: IFoodOrder) => {
     const callerName = isDriver ? (driver?.name ?? "Admin") : "Admin";
-    // Find existing row to increment attempt count
+
+    // ── 1. Optimistic local update first (zero perceived latency) ──
+    setCourierRoutes(prev => {
+      const next = prev.map(r =>
+        r.id === routeId
+          ? { ...r, orders: r.orders.filter(o => o.id !== order.id) }
+          : r
+      );
+      const cleaned = cleanupEmptyRoutes(next);
+      if (!cleaned.find(r => r.id === routeId)) {
+        setTimeout(() => setActiveTab("queue"), 0);
+      }
+      return cleaned;
+    });
+    // Optimistic no-contact entry (Realtime will confirm/replace)
+    const tempNc: NoContactOrder = {
+      id: `temp-${order.id}`,
+      order_id: order.id,
+      order_data: order,
+      marked_by: callerName,
+      attempt_count: 1,
+      marked_at: new Date().toISOString(),
+    };
+    setNoContactOrders(prev => {
+      const existing = prev.find(x => x.order_id === order.id);
+      if (existing) return prev.map(x => x.order_id === order.id ? { ...x, attempt_count: x.attempt_count + 1 } : x);
+      return [tempNc, ...prev];
+    });
+    toast.info(`Pedido #${order.displayId} movido para Retentativas.`);
+
+    // ── 2. Persist to Supabase in background ──
     const { data: existing } = await (supabase as any)
       .from("no_contact_orders")
       .select("id, attempt_count")
       .eq("order_id", order.id)
       .limit(1);
     if (existing && existing.length > 0) {
-      // Update existing: increment attempt count
       await (supabase as any)
         .from("no_contact_orders")
         .update({ attempt_count: (existing[0].attempt_count ?? 1) + 1, marked_by: callerName, marked_at: new Date().toISOString(), order_data: order as any })
@@ -536,21 +570,6 @@ const Index = () => {
         attempt_count: 1,
       });
     }
-    // Remove order from route; auto-close route if now empty
-    setCourierRoutes(prev => {
-      const next = prev.map(r =>
-        r.id === routeId
-          ? { ...r, orders: r.orders.filter(o => o.id !== order.id) }
-          : r
-      );
-      const cleaned = cleanupEmptyRoutes(next);
-      if (!cleaned.find(r => r.id === routeId)) {
-        // Route was closed — go back to queue
-        setTimeout(() => setActiveTab("queue"), 0);
-      }
-      return cleaned;
-    });
-    toast.info(`Pedido #${order.displayId} movido para Retentativas.`);
   };
 
   // ── Claim a no-contact order for a retry ───────────────────────────────────
@@ -832,45 +851,35 @@ const Index = () => {
             <div className="flex items-center gap-2">
               <UserX size={18} className="text-orange-400" />
               <h2 className="font-semibold text-foreground">Retentativas de Entrega</h2>
-              <span className="ml-auto text-xs text-muted-foreground">{noContactOrders.length} pedido(s)
-              </span>
+              <span className="ml-auto text-xs text-muted-foreground">{noContactOrders.length} pedido(s)</span>
             </div>
             {noContactOrders.length === 0 ? (
               <div className="text-center py-10 text-muted-foreground text-sm">Nenhuma retentativa no momento.</div>
             ) : (
               <div className="space-y-3">
                 {noContactOrders.map(nc => (
-                  <div key={nc.id} className="glass-card rounded-xl p-4 space-y-3 border-l-4 border-l-orange-500/60">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground">#{nc.order_data.displayId}</span>
-                          {nc.attempt_count > 1 && (
-                            <span className="text-xs px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400 border border-orange-500/30">
-                              {nc.attempt_count}ª tentativa
-                            </span>
-                          )}
-                        </div>
-                        <p className="font-semibold text-foreground mt-1">{nc.order_data.customerName}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">{nc.order_data.address}</p>
-                      </div>
-                      <span className="text-sm font-semibold text-foreground whitespace-nowrap">
-                        R$ {(nc.order_data.total / 100).toFixed(2)}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span className="flex items-center gap-1"><UserX size={11} className="text-orange-400" /> Marcado por {nc.marked_by}</span>
-                      {nc.order_data.customerPhone && (
-                        <a href={`tel:${nc.order_data.customerPhone}`} className="text-primary hover:underline">{nc.order_data.customerPhone}</a>
-                      )}
-                    </div>
-                    <button
-                      onClick={() => handleClaimNoContact(nc)}
-                      className="w-full py-2.5 rounded-lg bg-orange-500/15 border border-orange-500/30 text-sm text-orange-400 font-medium hover:bg-orange-500/25 hover:border-orange-500/50 transition-all flex items-center justify-center gap-2"
-                    >
-                      <RotateCcw size={14} /> Tentar novamente
-                    </button>
-                  </div>
+                  <NoContactCard
+                    key={nc.id}
+                    nc={nc}
+                    isAdmin={isAdmin}
+                    onClaim={() => handleClaimNoContact(nc)}
+                    onAdminAssign={async (driverName) => {
+                      // Admin assigns directly to a specific driver
+                      await (supabase as any).from("no_contact_orders").delete().eq("id", nc.id);
+                      const orderToAdd = { ...nc.order_data, confirmed: false };
+                      setCourierRoutes(prev => {
+                        const idx = prev.findIndex(r => r.name.toLowerCase() === driverName.toLowerCase());
+                        if (idx >= 0) {
+                          const updated = [...prev];
+                          updated[idx] = { ...updated[idx], orders: [...updated[idx].orders, orderToAdd] };
+                          return updated;
+                        }
+                        return [...prev, { id: crypto.randomUUID(), name: driverName, orders: [orderToAdd], startLat: storeLat, startLng: storeLng, createdAt: new Date().toISOString() }];
+                      });
+                      setNoContactOrders(prev => prev.filter(x => x.id !== nc.id));
+                      toast.success(`Pedido #${nc.order_data.displayId} reatribuído para ${driverName}.`);
+                    }}
+                  />
                 ))}
               </div>
             )}
@@ -1112,3 +1121,103 @@ const Index = () => {
 };
 
 export default Index;
+
+/* ─────────────────────────── NoContactCard ─────────────────────────────── */
+interface NoContactCardProps {
+  nc: import("@/lib/types").NoContactOrder;
+  isAdmin: boolean;
+  onClaim: () => void;
+  onAdminAssign: (driverName: string) => Promise<void>;
+}
+
+function NoContactCard({ nc, isAdmin, onClaim, onAdminAssign }: NoContactCardProps) {
+  const [showAssign, setShowAssign] = useState(false);
+  const [drivers, setDrivers] = useState<string[]>([]);
+  const [loadingDrivers, setLoadingDrivers] = useState(false);
+  const [assigning, setAssigning] = useState(false);
+
+  const openAssign = async () => {
+    setShowAssign(true);
+    if (drivers.length > 0) return;
+    setLoadingDrivers(true);
+    const { data } = await supabase.from("drivers").select("name").eq("status", "active");
+    setDrivers((data || []).map((d: { name: string }) => d.name));
+    setLoadingDrivers(false);
+  };
+
+  return (
+    <div className="glass-card rounded-xl p-4 space-y-3 border-l-4 border-l-orange-500/60">
+      {/* Order info */}
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground">#{nc.order_data.displayId}</span>
+            {nc.attempt_count > 1 && (
+              <span className="text-xs px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400 border border-orange-500/30">
+                {nc.attempt_count}ª tentativa
+              </span>
+            )}
+          </div>
+          <p className="font-semibold text-foreground mt-1">{nc.order_data.customerName}</p>
+          <p className="text-xs text-muted-foreground mt-0.5">{nc.order_data.address}</p>
+        </div>
+        <span className="text-sm font-semibold text-foreground whitespace-nowrap">
+          R$ {(nc.order_data.total / 100).toFixed(2)}
+        </span>
+      </div>
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span className="flex items-center gap-1">
+          <UserX size={11} className="text-orange-400" /> Marcado por {nc.marked_by}
+        </span>
+        {nc.order_data.customerPhone && (
+          <a href={`tel:${nc.order_data.customerPhone}`} className="text-primary hover:underline">
+            {nc.order_data.customerPhone}
+          </a>
+        )}
+      </div>
+
+      {/* Driver: retry button */}
+      {!isAdmin && (
+        <button
+          onClick={onClaim}
+          className="w-full py-2.5 rounded-lg bg-orange-500/15 border border-orange-500/30 text-sm text-orange-400 font-medium hover:bg-orange-500/25 hover:border-orange-500/50 transition-all flex items-center justify-center gap-2"
+        >
+          <RotateCcw size={14} /> Tentar novamente
+        </button>
+      )}
+
+      {/* Admin: reassign to driver dropdown */}
+      {isAdmin && !showAssign && (
+        <button
+          onClick={openAssign}
+          className="w-full py-2.5 rounded-lg bg-secondary border border-border text-sm text-muted-foreground hover:text-foreground hover:border-primary/40 transition-all flex items-center justify-center gap-2"
+        >
+          <RefreshCw size={14} /> Reatribuir para motorista
+        </button>
+      )}
+      {isAdmin && showAssign && (
+        <div className="space-y-2 animate-slide-up">
+          <p className="text-xs text-muted-foreground">Selecionar motorista:</p>
+          {loadingDrivers ? (
+            <div className="flex items-center justify-center py-2"><Loader2 size={16} className="animate-spin text-primary" /></div>
+          ) : drivers.length === 0 ? (
+            <p className="text-xs text-muted-foreground text-center py-1">Nenhum motorista ativo.</p>
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              {drivers.map(name => (
+                <button key={name}
+                  disabled={assigning}
+                  onClick={async () => { setAssigning(true); await onAdminAssign(name); setAssigning(false); setShowAssign(false); }}
+                  className="w-full py-2 px-3 rounded-lg bg-primary/10 text-sm text-primary font-medium hover:bg-primary/20 transition-all text-left disabled:opacity-50"
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          )}
+          <button onClick={() => setShowAssign(false)} className="text-xs text-muted-foreground hover:text-foreground w-full text-center py-1">Cancelar</button>
+        </div>
+      )}
+    </div>
+  );
+}
