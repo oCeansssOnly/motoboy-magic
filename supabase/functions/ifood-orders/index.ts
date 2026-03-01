@@ -75,30 +75,34 @@ Deno.serve(async (req) => {
       headers: { "Authorization": `Bearer ${accessToken}` },
     });
 
+    // Poll events — don't acknowledge yet; we'll only ack orders we actually process
     let events = [];
     if (eventsRes.status === 200) {
       const parsed = await safeJson(eventsRes);
       if (Array.isArray(parsed)) events = parsed;
-      if (events.length > 0) {
-        await fetch(`${IFOOD_API}/events/v1.0/events/acknowledgment`, {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify(events.map(e => ({ id: e.id }))),
-        });
-      }
     } else {
       await eventsRes.text();
     }
 
-    // Poll events — accept all event codes, we filter by status after fetching order details
     const orderIds = events.map(e => e.orderId).filter(Boolean);
     const uniqueIds = [...new Set(orderIds)];
     const orders = [];
 
     // Statuses we want to show in the restaurant queue
-    const ACCEPTED_STATUSES = ["ACCEPTED", "DISPATCHED", "READY_TO_PICKUP", "CONCLUDED"];
+    const SHOW_STATUSES = ["ACCEPTED", "DISPATCHED", "READY_TO_PICKUP"];
+    // Delivery modes for restaurant's own fleet (not iFood partners or pickup)
+    const OWN_DELIVERY_MODES = ["DEFAULT", "RESTAURANT", "OWN"];
 
-    for (const orderId of uniqueIds) {
+    // Track which event IDs to acknowledge (only accepted-or-later orders)
+    const eventIdsToAck: string[] = [];
+
+    for (const event of events) {
+      const orderId = event.orderId;
+      if (!orderId) { eventIdsToAck.push(event.id); continue; } // ack non-order events
+      if (!uniqueIds.includes(orderId)) continue;
+      // Remove from uniqueIds to avoid double-processing
+      uniqueIds.splice(uniqueIds.indexOf(orderId), 1);
+
       try {
         const oRes = await fetch(`${IFOOD_API}/order/v1.0/orders/${orderId}`, {
           headers: { "Authorization": `Bearer ${accessToken}` },
@@ -106,28 +110,36 @@ Deno.serve(async (req) => {
         if (oRes.status === 200) {
           const o = await safeJson(oRes);
           const id = o.id || o.ID;
-          if (!id) continue;
+          if (!id) { eventIdsToAck.push(event.id); continue; }
 
           const status = (o.orderStatus || o.ORDERSTATUS || "").toUpperCase();
 
-          // Only show orders that the store has already ACCEPTED (not just PLACED/CONFIRMED)
-          if (!ACCEPTED_STATUSES.includes(status)) continue;
+          // Skip orders not yet accepted — leave event un-acked so it reappears next poll
+          if (!SHOW_STATUSES.includes(status)) continue;
 
           const delivery = o.delivery || o.DELIVERY || {};
+          const deliveryMode = (delivery.mode || delivery.MODE || "").toUpperCase();
+
+          // Only show own-delivery orders; skip pickup and partner delivery
+          const orderType = (o.orderType || o.ORDERTYPE || "").toUpperCase();
+          if (orderType === "TAKEOUT" || orderType === "PICKUP") { eventIdsToAck.push(event.id); continue; }
+          if (deliveryMode && !OWN_DELIVERY_MODES.some(m => deliveryMode.includes(m))) {
+            eventIdsToAck.push(event.id); continue;
+          }
+
+          // Mark this event as processed
+          eventIdsToAck.push(event.id);
+
           const customer = o.customer || o.CUSTOMER || {};
-          // Try all known casing variants for address
           const address = delivery.deliveryAddress || delivery.DELIVERYADDRESS || {};
           const coords = address.coordinates || address.COORDINATES || {};
           const totals = o.total || o.TOTAL || {};
           const paymentsArr = o.payments || o.PAYMENTS || [];
           const itemsArr = o.items || o.ITEMS || [];
 
-          // The true customer-facing order number (localizador)
-          // iFood uses "orderNumber" (camelCase) or "ORDERNUMBER" (uppercase sandbox)
           const localizador = o.orderNumber || o.ORDERNUMBER || o.displayId || o.DISPLAYID || id.slice(0, 8);
           const displayId = o.displayId || o.DISPLAYID || id.slice(0, 8);
 
-          // Build address string checking uppercase variant keys too
           const streetName = address.streetName || address.STREETNAME || "";
           const streetNum  = address.streetNumber || address.STREETNUMBER || "";
           const complement = address.complement || address.COMPLEMENT || "";
@@ -153,8 +165,23 @@ Deno.serve(async (req) => {
             deliveryCode: delivery.deliveryCode || delivery.DELIVERYCODE || o.CONFIRMATIONTOKEN || o.confirmationToken || "",
             raw: o,
           });
-        } else { await oRes.text(); }
-      } catch (err) { console.error(`Error fetching order ${orderId}:`, err); }
+        } else {
+          await oRes.text();
+          eventIdsToAck.push(event.id); // ack failed fetches to avoid infinite loops
+        }
+      } catch (err) {
+        console.error(`Error fetching order ${event.orderId}:`, err);
+        eventIdsToAck.push(event.id);
+      }
+    }
+
+    // Only acknowledge events we've fully processed
+    if (eventIdsToAck.length > 0) {
+      await fetch(`${IFOOD_API}/events/v1.0/events/acknowledgment`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(eventIdsToAck.map(id => ({ id }))),
+      });
     }
 
     return new Response(JSON.stringify({ orders, eventsCount: events.length }), {
