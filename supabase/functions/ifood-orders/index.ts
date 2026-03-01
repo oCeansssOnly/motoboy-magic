@@ -175,6 +175,16 @@ Deno.serve(async (req: Request) => {
           address.state || address.STATE || "",
         ].filter(Boolean).join(", ") || "Endereço não disponível";
 
+        const merchant = o.merchant || o.MERCHANT || {};
+        const mAddr = merchant.address || merchant.ADDRESS || {};
+        const merchantAddress = [
+          mAddr.streetName  || mAddr.STREETNAME  || "",
+          mAddr.streetNumber || mAddr.STREETNUMBER || "",
+          mAddr.neighborhood || mAddr.NEIGHBORHOOD || "",
+          mAddr.city || mAddr.CITY || "",
+          mAddr.state || mAddr.STATE || "",
+        ].filter(Boolean).join(", ");
+
         orders.push({
           id, displayId, localizador,
           customerName: customer.name || customer.NAME || "Cliente",
@@ -187,10 +197,11 @@ Deno.serve(async (req: Request) => {
           items: itemsArr.map((i: any) => `${i.quantity || i.QUANTITY}x ${i.name || i.NAME}`).join(", ") || "",
           status,
           createdAt: o.createdAt || o.CREATEDAT,
-          // pickupCode is the 4-digit code the customer shows to the courier at delivery
           deliveryCode: delivery.pickupCode || delivery.PICKUPCODE || "",
+          merchantAddress: merchantAddress || null,
           raw: o,
         });
+
 
       } catch (err) {
         console.error(`Error fetching order ${orderId}:`, err);

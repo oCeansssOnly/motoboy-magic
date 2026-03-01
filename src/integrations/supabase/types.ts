@@ -86,7 +86,32 @@ export type Database = {
         }
         Relationships: []
       }
+      transfer_requests: {
+        Row: {
+          id: string
+          order_id: string
+          order_data: Record<string, unknown>
+          requester_name: string
+          current_owner_name: string
+          status: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          order_id: string
+          order_data: Record<string, unknown>
+          requester_name: string
+          current_owner_name: string
+          status?: string
+          created_at?: string
+        }
+        Update: {
+          status?: string
+        }
+        Relationships: []
+      }
       user_profiles: {
+
         Row: {
           id: string
           auth_user_id: string

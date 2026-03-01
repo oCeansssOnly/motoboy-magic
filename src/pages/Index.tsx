@@ -6,7 +6,9 @@ import { CourierTab } from "@/components/CourierTab";
 import { AssignCourierModal } from "@/components/AssignCourierModal";
 import { AuthGate } from "@/pages/AuthGate";
 import { ProfileMenu } from "@/components/ProfileMenu";
+import { HoldTransferModal } from "@/components/HoldTransferModal";
 import { useAuth } from "@/contexts/AuthContext";
+import { useTransferRequests } from "@/hooks/useTransferRequests";
 import { IFoodOrder, CourierRoute, optimizeRoute, generateGoogleMapsUrl } from "@/lib/types";
 import {
   Navigation,
@@ -20,6 +22,7 @@ import {
   AlertCircle,
   Bike,
   Radio,
+  Store,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -72,6 +75,7 @@ const Index = () => {
   const dismissedIdsRef = useRef<Set<string>>(dismissedOrderIds);
 
   const [assigning, setAssigning] = useState(false);
+  const [storeAddress, setStoreAddress] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [polling, setPolling] = useState(false);
@@ -84,7 +88,29 @@ const Index = () => {
   const [storeLng, setStoreLng] = useState<number>(() => {
     try { return JSON.parse(localStorage.getItem(LS_STORE_KEY) || "null")?.lng ?? -46.633308; } catch { return -46.633308; }
   });
-  const [showStoreConfig, setShowStoreConfig] = useState(false);
+
+  // ── Transfer request (approved: add order to my route) ─────────────────────
+  const handleOrderApproved = useCallback((order: IFoodOrder, gpsLat: number, gpsLng: number) => {
+    if (!driver) return;
+    setCourierRoutes(prev => {
+      const destIdx = prev.findIndex(r => r.name.toLowerCase() === driver.name.toLowerCase());
+      if (destIdx >= 0) {
+        const updated = [...prev];
+        updated[destIdx] = { ...updated[destIdx], startLat: gpsLat, startLng: gpsLng, orders: [...updated[destIdx].orders, order] };
+        return updated;
+      }
+      const newRoute: CourierRoute = { id: crypto.randomUUID(), name: driver.name, orders: [order], startLat: gpsLat, startLng: gpsLng, createdAt: new Date().toISOString() };
+      return [...prev, newRoute];
+    });
+    toast.success("Pedido transferido com sucesso! Confira sua rota.");
+  }, [driver]);
+
+  const { incomingRequest, outgoingPending, requestTransfer, approveIncoming, rejectIncoming } = useTransferRequests({
+    myName: isDriver ? (driver?.name ?? null) : null,
+    onOrderApproved: handleOrderApproved,
+    storeLat,
+    storeLng,
+  });
 
   const [needsAuth, setNeedsAuth] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -175,7 +201,8 @@ const Index = () => {
       if (data?.needsAuth) { setNeedsAuth(true); return; }
       if (fnError) throw fnError;
       if (data?.orders && Array.isArray(data.orders)) {
-        // Always merge to preserve local state like 'selected', 'confirmed', etc.
+        // Capture store address from real iFood merchant data
+        if (data.merchantAddress) setStoreAddress(data.merchantAddress);
         mergeOrders(data.orders);
         if (!silent && data.orders.length > 0) {
           toast.success(`${data.orders.length} pedido(s) processado(s)`);
@@ -390,11 +417,32 @@ const Index = () => {
     }, 100);
   };
 
+  // ── Admin direct reassign (no hold needed) ──────────────────────────
+  const handleAdminReassign = (fromRouteId: string, orderId: string, toDriver: string) => {
+    setCourierRoutes(prev => {
+      const fromRoute = prev.find(r => r.id === fromRouteId);
+      const order = fromRoute?.orders.find(o => o.id === orderId);
+      if (!order) return prev;
+      const withoutOrder = prev
+        .map(r => r.id === fromRouteId ? { ...r, orders: r.orders.filter(o => o.id !== orderId) } : r)
+        .filter(r => r.orders.length > 0);
+      const destIdx = withoutOrder.findIndex(r => r.name.toLowerCase() === toDriver.toLowerCase());
+      if (destIdx >= 0) {
+        const updated = [...withoutOrder];
+        updated[destIdx] = { ...updated[destIdx], orders: [...updated[destIdx].orders, order] };
+        return updated;
+      }
+      return [...withoutOrder, { id: crypto.randomUUID(), name: toDriver, orders: [order], createdAt: new Date().toISOString() }];
+    });
+    toast.success(`Pedido reatribuído para ${toDriver}.`);
+  };
+
   const handleConfirmOrderInQueue = (orderId: string, code: string) => {
     setOrders((prev) =>
       prev.map((o) => o.id === orderId ? { ...o, confirmed: true, confirmationCode: code } : o)
     );
   };
+
 
   const unconfirmedOrders = orders.filter((o) => !o.confirmed);
   const confirmedOrders = orders.filter((o) => o.confirmed);
@@ -499,29 +547,23 @@ const Index = () => {
             storeLat={storeLat}
             storeLng={storeLng}
             currentDriverName={isDriver ? driver?.name ?? null : null}
+            isAdmin={isAdmin}
+            outgoingPending={outgoingPending}
             onClose={() => handleCloseCourierRoute(activeRouteData.id)}
             onOrderConfirmed={handleOrderConfirmed}
-            onTransferOrder={handleTransferOrder}
+            onRequestTransfer={(order, ownerName) => requestTransfer(order, ownerName)}
+            onAdminReassign={(fromRouteId, orderId, toDriver) => handleAdminReassign(fromRouteId, orderId, toDriver)}
           />
         )}
 
         {/* ── Main queue view ── */}
         {!needsAuth && !checkingAuth && activeTab === "queue" && (
           <>
-            {/* Store config */}
-            <button
-              onClick={() => setShowStoreConfig(!showStoreConfig)}
-              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
-            >
-              <MapPin size={11} /> Local da loja: {storeLat.toFixed(4)}, {storeLng.toFixed(4)}
-            </button>
-            {showStoreConfig && (
-              <div className="glass-card rounded-lg p-3 space-y-2 animate-slide-up">
-                <label className="text-xs text-muted-foreground">Coordenadas da loja</label>
-                <div className="flex gap-2">
-                  <input type="number" step="0.0001" value={storeLat} onChange={(e) => setStoreLat(parseFloat(e.target.value) || 0)} className="flex-1 bg-input border border-border rounded px-2 py-1.5 text-sm text-foreground focus:ring-1 focus:ring-primary outline-none" placeholder="Latitude" />
-                  <input type="number" step="0.0001" value={storeLng} onChange={(e) => setStoreLng(parseFloat(e.target.value) || 0)} className="flex-1 bg-input border border-border rounded px-2 py-1.5 text-sm text-foreground focus:ring-1 focus:ring-primary outline-none" placeholder="Longitude" />
-                </div>
+            {/* Store address (from iFood) */}
+            {storeAddress && (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Store size={11} />
+                <span className="truncate">Loja: {storeAddress}</span>
               </div>
             )}
 
@@ -666,6 +708,27 @@ const Index = () => {
           orderCount={selectedOrders.length}
           onConfirm={handleAssignCourier}
           onCancel={() => setShowAssignModal(false)}
+        />
+      )}
+
+      {/* Incoming transfer request popup (owner/receiver) */}
+      {incomingRequest && (
+        <HoldTransferModal
+          order={incomingRequest.order_data}
+          fromDriverName={incomingRequest.current_owner_name}
+          toDriverName={incomingRequest.requester_name}
+          onCancel={rejectIncoming}
+          onApprove={() => {
+            // Remove order from my local route
+            setCourierRoutes(prev =>
+              prev.map(r =>
+                r.orders.some(o => o.id === incomingRequest.order_id)
+                  ? { ...r, orders: r.orders.filter(o => o.id !== incomingRequest.order_id) }
+                  : r
+              ).filter(r => r.orders.length > 0)
+            );
+            approveIncoming();
+          }}
         />
       )}
     </div>
