@@ -154,8 +154,16 @@ function DeliveryCard({ order, index, routeId, onConfirmed }: DeliveryCardProps)
   const handleConfirm = async () => {
     if (!confirmCode.trim()) { toast.error("Informe o código de confirmação!"); return; }
 
-    // Strict validation: if iFood provided a delivery code, the entered code must match
-    if (order.deliveryCode && confirmCode.trim() !== order.deliveryCode) {
+    // Block if iFood hasn't provided a pickupCode — never accept unknown/placeholder codes
+    if (!order.deliveryCode) {
+      toast.error("Código não disponível", {
+        description: "O iFood não enviou o código para este pedido. Aguarde a atualização do status.",
+      });
+      return;
+    }
+
+    // Strict validation: entered code must exactly match the iFood pickupCode
+    if (confirmCode.trim() !== order.deliveryCode) {
       toast.error("Código inválido!", { description: "Verifique o código com o cliente." });
       return;
     }

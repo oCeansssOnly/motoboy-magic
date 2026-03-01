@@ -60,6 +60,11 @@ const Index = () => {
   // Track order IDs that have been assigned to a motoboy so they never
   // re-appear in the main queue when iFood emits subsequent events for them.
   const [dismissedOrderIds, setDismissedOrderIds] = useState<Set<string>>(loadDismissedIds);
+  // Ref mirrors the state so mergeOrders can read the CURRENT dismissed set
+  // without stale-closure or nested-setState issues.
+  const dismissedIdsRef = useRef<Set<string>>(dismissedOrderIds);
+
+  const [assigning, setAssigning] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [polling, setPolling] = useState(false);
@@ -116,27 +121,24 @@ const Index = () => {
     );
   }, []);
 
-  // Merge new orders without wiping existing local state (selected, confirmed, etc.)
-  // Dismissed orders (already assigned to motoboys) are silently ignored.
+  // Merge new orders without wiping existing local state.
+  // Uses ref so it always sees the current dismissed set — no nested setState.
   const mergeOrders = useCallback((freshOrders: IFoodOrder[]) => {
-    setDismissedOrderIds((dismissed) => {
-      setOrders((prev) => {
-        const existing = new Map(prev.map((o) => [o.id, o]));
-        let added = 0;
-        freshOrders.forEach((fresh) => {
-          // Skip orders that are already in a motoboy route or have been dismissed
-          if (dismissed.has(fresh.id)) return;
-          if (!existing.has(fresh.id)) {
-            existing.set(fresh.id, { ...fresh, selected: false, confirmed: false, confirmationCode: "" });
-            added++;
-          }
-        });
-        if (added > 0) {
-          toast.success(`🆕 ${added} novo(s) pedido(s) chegaram!`, { duration: 5000 });
+    setOrders((prev) => {
+      const dismissed = dismissedIdsRef.current;
+      const existing = new Map(prev.map((o) => [o.id, o]));
+      let added = 0;
+      freshOrders.forEach((fresh) => {
+        if (dismissed.has(fresh.id)) return; // skip assigned/dismissed orders
+        if (!existing.has(fresh.id)) {
+          existing.set(fresh.id, { ...fresh, selected: false, confirmed: false, confirmationCode: "" });
+          added++;
         }
-        return Array.from(existing.values());
       });
-      return dismissed; // No change to dismissed set here
+      if (added > 0) {
+        toast.success(`🆕 ${added} novo(s) pedido(s) chegaram!`, { duration: 5000 });
+      }
+      return Array.from(existing.values());
     });
   }, []);
 
@@ -209,44 +211,47 @@ const Index = () => {
   // ── Courier route assignment ──
   const handleAssignCourier = async (courierName: string) => {
     if (selectedOrders.length === 0) return;
+    setAssigning(true);
+    setShowAssignModal(false);
 
-    // Dispatch all orders via iFood API first (fire and forget, best effort)
-    // This signals to iFood that the courier left the store.
-    const dispatchResults = await Promise.allSettled(
+    // Dispatch all selected orders via iFood API.
+    // Note: supabase.functions.invoke() always resolves (never rejects) —
+    // errors are returned in data.error, not as promise rejections.
+    const dispatchResults = await Promise.all(
       selectedOrders.map((o) =>
         supabase.functions.invoke("ifood-dispatch", { body: { orderId: o.id } })
+          .then(({ data, error }) => ({
+            orderId: o.id,
+            ok: !!data?.success && !error,
+            message: error?.message || data?.message || "",
+          }))
       )
     );
-    const failedCount = dispatchResults.filter((r) => r.status === "rejected").length;
-    if (failedCount > 0) {
-      toast.warning(`${failedCount} pedido(s) não despachados via API. Verifique o painel iFood.`);
+    const failedDispatches = dispatchResults.filter((r) => !r.ok);
+    if (failedDispatches.length > 0) {
+      toast.warning(
+        `${failedDispatches.length} pedido(s) não despachado(s) via API.`,
+        { description: failedDispatches.map(r => r.message).filter(Boolean).join("; ") || "Verifique o painel iFood." }
+      );
+    } else {
+      toast.success(`${dispatchResults.length} pedido(s) despachado(s) via iFood!`);
     }
 
-    // Mark orders as DISPATCHED locally so the confirmation section becomes visible
+    // Mark orders as DISPATCHED locally so the confirmation section appears
     const ordersToAssign = selectedOrders.map((o) => ({ ...o, confirmed: false, status: "DISPATCHED" }));
-    let assignedRouteId: string;
+    let assignedRouteId = "";
 
     setCourierRoutes((prev) => {
-      // Find if this courier already has an active route
       const existingRouteIndex = prev.findIndex(r => r.name.toLowerCase() === courierName.toLowerCase());
-
       if (existingRouteIndex >= 0) {
-        // Merge into existing route
         const newRoutes = [...prev];
         const existingRoute = newRoutes[existingRouteIndex];
-        
-        // Filter out orders that are already in the route to avoid duplicates
         const existingOrderIds = new Set(existingRoute.orders.map(o => o.id));
         const newUniqueOrders = ordersToAssign.filter(o => !existingOrderIds.has(o.id));
-
-        newRoutes[existingRouteIndex] = {
-          ...existingRoute,
-          orders: [...existingRoute.orders, ...newUniqueOrders],
-        };
+        newRoutes[existingRouteIndex] = { ...existingRoute, orders: [...existingRoute.orders, ...newUniqueOrders] };
         assignedRouteId = existingRoute.id;
         return newRoutes;
       } else {
-        // Create new route
         const newRoute: CourierRoute = {
           id: crypto.randomUUID(),
           name: courierName,
@@ -258,34 +263,30 @@ const Index = () => {
       }
     });
 
-    // Mark assigned order IDs as dismissed so they never re-appear in the queue
-    // even if iFood emits new events for them (DISPATCHED, CONFIRMED, etc.)
+    // Dismiss all assigned order IDs — update both ref and state atomically
     const assignedIds = new Set(selectedOrders.map((o) => o.id));
-    setDismissedOrderIds((prev) => {
-      const next = new Set(prev);
-      assignedIds.forEach((id) => next.add(id));
-      return next;
-    });
+    const nextDismissed = new Set(dismissedIdsRef.current);
+    assignedIds.forEach((id) => nextDismissed.add(id));
+    dismissedIdsRef.current = nextDismissed;
+    setDismissedOrderIds(nextDismissed);
+    saveDismissedIds(nextDismissed);
 
-    // Remove assigned orders from main queue
     setOrders((prev) => prev.filter((o) => !assignedIds.has(o.id)));
     setSelectedIds(new Set());
-    setShowAssignModal(false);
-    setActiveTab(assignedRouteId); // Set active tab to the newly assigned/updated route
+    setAssigning(false);
+    if (assignedRouteId) setActiveTab(assignedRouteId);
     toast.success(`${ordersToAssign.length} pedido(s) atribuído(s) para ${courierName}!`);
   };
 
   const handleCloseCourierRoute = (routeId: string) => {
-    // When a route is closed, un-dismiss its orders so they can re-appear
-    // in the queue if they somehow come back from iFood (edge case).
     const routeToClose = courierRoutes.find((r) => r.id === routeId);
     if (routeToClose) {
-      const routeOrderIds = new Set(routeToClose.orders.map((o) => o.id));
-      setDismissedOrderIds((prev) => {
-        const next = new Set(prev);
-        routeOrderIds.forEach((id) => next.delete(id));
-        return next;
-      });
+      const routeOrderIds = routeToClose.orders.map((o) => o.id);
+      const nextDismissed = new Set(dismissedIdsRef.current);
+      routeOrderIds.forEach((id) => nextDismissed.delete(id));
+      dismissedIdsRef.current = nextDismissed;
+      setDismissedOrderIds(nextDismissed);
+      saveDismissedIds(nextDismissed);
     }
     setCourierRoutes((prev) => prev.filter((r) => r.id !== routeId));
     setActiveTab("queue");

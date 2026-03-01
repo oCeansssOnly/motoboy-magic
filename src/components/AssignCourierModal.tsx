@@ -3,17 +3,23 @@ import { X, Bike } from "lucide-react";
 
 interface AssignCourierModalProps {
   orderCount: number;
-  onConfirm: (name: string) => void;
+  onConfirm: (name: string) => void | Promise<void>;
   onCancel: () => void;
 }
 
 export function AssignCourierModal({ orderCount, onConfirm, onCancel }: AssignCourierModalProps) {
   const [name, setName] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    onConfirm(trimmed);
+    setLoading(true);
+    try {
+      await onConfirm(trimmed);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -57,10 +63,12 @@ export function AssignCourierModal({ orderCount, onConfirm, onCancel }: AssignCo
           </button>
           <button
             onClick={handleConfirm}
-            disabled={!name.trim()}
-            className="flex-1 py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-all disabled:opacity-40"
+            disabled={!name.trim() || loading}
+            className="flex-1 py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
           >
-            Confirmar Rota
+            {loading ? (
+              <><span className="w-4 h-4 border-2 border-primary-foreground/40 border-t-primary-foreground rounded-full animate-spin" />Despachando...</>
+            ) : "Confirmar Rota"}
           </button>
         </div>
       </div>
