@@ -53,6 +53,39 @@ export type Database = {
         }
         Relationships: []
       }
+      drivers: {
+        Row: {
+          id: string
+          name: string
+          phone: string | null
+          status: string
+          notes: string | null
+          approved_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          name: string
+          phone?: string | null
+          status?: string
+          notes?: string | null
+          approved_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          name?: string
+          phone?: string | null
+          status?: string
+          notes?: string | null
+          approved_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       ifood_tokens: {
         Row: {
           access_token: string

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { OrderCard } from "@/components/OrderCard";
 import { IFoodSetup } from "@/components/IFoodSetup";
 import { CourierTab } from "@/components/CourierTab";
@@ -52,6 +53,7 @@ function saveDismissedIds(ids: Set<string>) {
 }
 
 const Index = () => {
+  const navigate = useNavigate();
   const [orders, setOrders] = useState<IFoodOrder[]>([]);
   const [courierRoutes, setCourierRoutes] = useState<CourierRoute[]>(loadRoutesFromStorage);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -339,14 +341,23 @@ const Index = () => {
                 </div>
               </div>
             </div>
-            <button
-              onClick={() => fetchOrders(false)}
-              disabled={loading || polling}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all text-sm"
-            >
-              {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-              Atualizar
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => navigate("/admin/motoristas")}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all text-sm"
+              >
+                <Bike size={14} />
+                Motoristas
+              </button>
+              <button
+                onClick={() => fetchOrders(false)}
+                disabled={loading || polling}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all text-sm"
+              >
+                {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                Atualizar
+              </button>
+            </div>
           </div>
         </div>
 
