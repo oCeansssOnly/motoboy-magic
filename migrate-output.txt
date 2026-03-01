@@ -1,0 +1,38 @@
+﻿
+≡ƒÜÇ  Iniciando migra├º├úo para nova conta Supabase...
+
+1/5  Buscando organiza├º├úo...
+  Γä╣  Nenhuma organiza├º├úo encontrada ΓÇö criando automaticamente...
+  Γ£ô  Organiza├º├úo criada: motoboy-magic-org
+
+2/5  Criando projeto...
+  Γ£ô  Projeto criado: motoboy-magic (ref: eyhdtiriqlnkmmlhclcr)
+
+3/5  Aguardando projeto inicializar...
+  Aguardando projeto ficar online. Γ£ô
+
+4/5  Configurando banco de dados e fun├º├╡es...
+  Γ£ô  Migra├º├╡es executadas
+  Γ£ô  Secrets configurados
+node : 
+At line:1 char:1
++ node 
+migrate-supabase.cjs 
+2>&1 | Out-File 
+-FilePath 
+migrate-output.tx ...
++ ~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~
+    + CategoryInfo     
+         : NotSpecifi  
+  ed: (:String) [],    
+ RemoteException
+    + FullyQualifiedEr 
+   rorId : NativeComm  
+  andError
+ 
+Γ¥î  Erro: POST /projec
+ts/eyhdtiriqlnkmmlhclcr
+/functions ΓåÆ 400: 
+{"message":"Function 
+slug must be provided"}

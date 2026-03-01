@@ -1,4 +1,4 @@
-project_id = "yggbukplsmpbhkkiwsse"
+project_id = "eyhdtiriqlnkmmlhclcr"
 
 [functions.ifood-orders]
 verify_jwt = false
