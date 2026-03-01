@@ -4,7 +4,7 @@ import { OrderCard } from "@/components/OrderCard";
 import { IFoodSetup } from "@/components/IFoodSetup";
 import { CourierTab } from "@/components/CourierTab";
 import { AssignCourierModal } from "@/components/AssignCourierModal";
-import { LoginModal } from "@/components/LoginModal";
+import { AuthGate } from "@/pages/AuthGate";
 import { ProfileMenu } from "@/components/ProfileMenu";
 import { useAuth } from "@/contexts/AuthContext";
 import { IFoodOrder, CourierRoute, optimizeRoute, generateGoogleMapsUrl } from "@/lib/types";
@@ -20,7 +20,6 @@ import {
   AlertCircle,
   Bike,
   Radio,
-  LogIn,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -58,8 +57,7 @@ function saveDismissedIds(ids: Set<string>) {
 
 const Index = () => {
   const navigate = useNavigate();
-  const { user, isDriver, driver } = useAuth();
-  const [showLoginModal, setShowLoginModal] = useState(false);
+  const { user, loading: authLoading, isApproved, isDriver, driver } = useAuth();
   const [driverStats, setDriverStats] = useState({ total: 0, thisMonth: 0 });
   const [orders, setOrders] = useState<IFoodOrder[]>([]);
   const [courierRoutes, setCourierRoutes] = useState<CourierRoute[]>(loadRoutesFromStorage);
@@ -344,8 +342,19 @@ const Index = () => {
 
   const unconfirmedOrders = orders.filter((o) => !o.confirmed);
   const confirmedOrders = orders.filter((o) => o.confirmed);
-
   const activeRouteData = courierRoutes.find((r) => r.id === activeTab);
+
+  // ── Auth gate: render fullscreen auth/status screen when needed ────────────
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 size={32} className="text-primary animate-spin" />
+      </div>
+    );
+  }
+  if (!user || !isApproved) {
+    return <AuthGate />;
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -374,17 +383,7 @@ const Index = () => {
                 {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
                 Atualizar
               </button>
-              {user ? (
-                <ProfileMenu driverStats={isDriver ? driverStats : undefined} />
-              ) : (
-                <button
-                  onClick={() => setShowLoginModal(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-all text-sm font-medium"
-                >
-                  <LogIn size={14} />
-                  Entrar
-                </button>
-              )}
+              <ProfileMenu driverStats={isDriver ? driverStats : undefined} />
             </div>
           </div>
         </div>
@@ -598,10 +597,6 @@ const Index = () => {
           onConfirm={handleAssignCourier}
           onCancel={() => setShowAssignModal(false)}
         />
-      )}
-
-      {showLoginModal && (
-        <LoginModal onClose={() => setShowLoginModal(false)} />
       )}
     </div>
   );

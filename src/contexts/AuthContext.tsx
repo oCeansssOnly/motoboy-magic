@@ -1,15 +1,15 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
 import { User, Session } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 
-interface UserProfile {
+export interface UserProfile {
   id: string;
   auth_user_id: string;
   role: "admin" | "driver";
   driver_id: string | null;
 }
 
-interface Driver {
+export interface Driver {
   id: string;
   name: string;
   phone: string | null;
@@ -26,13 +26,16 @@ interface AuthState {
   loading: boolean;
   isAdmin: boolean;
   isDriver: boolean;
+  isApproved: boolean; // admin OR active driver
   signOut: () => Promise<void>;
+  refreshProfile: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthState>({
   user: null, session: null, profile: null, driver: null,
-  loading: true, isAdmin: false, isDriver: false,
+  loading: true, isAdmin: false, isDriver: false, isApproved: false,
   signOut: async () => {},
+  refreshProfile: async () => {},
 });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -42,8 +45,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [driver, setDriver] = useState<Driver | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const loadProfile = async (userId: string) => {
-    // Fetch the user_profiles row
+  const loadProfile = useCallback(async (userId: string) => {
     const { data: profileData } = await supabase
       .from("user_profiles")
       .select("*")
@@ -51,34 +53,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .maybeSingle();
 
     if (!profileData) {
-      // First login — create a default driver profile
-      const { data: newProfile } = await supabase
-        .from("user_profiles")
-        .insert({ auth_user_id: userId, role: "driver" })
-        .select()
-        .single();
-      setProfile(newProfile as UserProfile ?? null);
+      // No profile yet — AuthGate will create it after signup
+      setProfile(null);
       setDriver(null);
       return;
     }
 
     setProfile(profileData as UserProfile);
 
-    // If driver role, fetch the linked drivers row
     if (profileData.driver_id) {
       const { data: driverData } = await supabase
         .from("drivers")
         .select("id, name, phone, status, approved_at, created_at")
         .eq("id", profileData.driver_id)
         .maybeSingle();
-      setDriver(driverData as Driver ?? null);
+      setDriver((driverData as Driver) ?? null);
     } else {
       setDriver(null);
     }
-  };
+  }, []);
+
+  const refreshProfile = useCallback(async () => {
+    if (user) await loadProfile(user.id);
+  }, [user, loadProfile]);
 
   useEffect(() => {
-    // Get initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
@@ -89,7 +88,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     });
 
-    // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
@@ -103,18 +101,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => subscription.unsubscribe();
-  }, []);
+  }, [loadProfile]);
 
-  const signOut = async () => {
-    await supabase.auth.signOut();
-  };
+  const isAdmin = profile?.role === "admin";
+  const isDriver = profile?.role === "driver";
+  const isApproved = isAdmin || (isDriver && driver?.status === "active");
 
   return (
     <AuthContext.Provider value={{
       user, session, profile, driver, loading,
-      isAdmin: profile?.role === "admin",
-      isDriver: profile?.role === "driver",
-      signOut,
+      isAdmin, isDriver, isApproved,
+      signOut: async () => { await supabase.auth.signOut(); },
+      refreshProfile,
     }}>
       {children}
     </AuthContext.Provider>
