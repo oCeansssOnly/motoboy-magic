@@ -138,6 +138,43 @@ export function useTransferRequests({
     return () => { supabase.removeChannel(channel); };
   }, [myName, storeLat, storeLng, onOrderApproved]);
 
+  // ── Polling fallback: catch approved requests missed by Realtime ───────────
+  // Runs every 10 s; picks up any "approved" rows that Realtime may have dropped.
+  useEffect(() => {
+    if (!myName) return;
+    const appliedApprovals = new Set<string>(); // track within this session
+
+    const poll = async () => {
+      const { data } = await supabase
+        .from("transfer_requests")
+        .select("*")
+        .eq("requester_name", myName)
+        .eq("status", "approved");
+
+      if (!data || data.length === 0) return;
+      for (const row of data as unknown as TransferRequest[]) {
+        if (appliedApprovals.has(row.id)) continue; // already handled this session
+        appliedApprovals.add(row.id);
+
+        let lat = storeLat, lng = storeLng;
+        try {
+          const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
+            navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 })
+          );
+          lat = pos.coords.latitude; lng = pos.coords.longitude;
+        } catch { /* store fallback */ }
+
+        onOrderApproved({ ...row.order_data, confirmed: false }, lat, lng);
+        setOutgoingPending(prev => { const n = new Set(prev); n.delete(row.order_id); return n; });
+        await supabase.from("transfer_requests").update({ status: "completed" }).eq("id", row.id);
+      }
+    };
+
+    poll(); // run immediately on mount
+    const interval = setInterval(poll, 10_000);
+    return () => clearInterval(interval);
+  }, [myName, storeLat, storeLng, onOrderApproved]);
+
   const requestTransfer = useCallback(async (order: IFoodOrder, currentOwnerName: string): Promise<boolean> => {
     if (!myName) return false;
     const { error } = await supabase.from("transfer_requests").insert({

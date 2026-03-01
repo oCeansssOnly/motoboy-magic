@@ -112,6 +112,14 @@ const Index = () => {
       const newRoute: CourierRoute = { id: crypto.randomUUID(), name: driver.name, orders: [order], startLat: gpsLat, startLng: gpsLng, createdAt: new Date().toISOString() };
       return [...prev, newRoute];
     });
+    // Switch to the driver's own route tab so the order is immediately visible
+    setTimeout(() => {
+      setCourierRoutes(prev => {
+        const ownRoute = prev.find(r => r.name.toLowerCase() === driver.name.toLowerCase());
+        if (ownRoute) setActiveTab(ownRoute.id);
+        return prev;
+      });
+    }, 100);
     toast.success("Pedido transferido com sucesso! Confira sua rota.");
   }, [driver]);
 
