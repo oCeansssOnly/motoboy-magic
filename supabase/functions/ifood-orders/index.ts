@@ -119,6 +119,7 @@ Deno.serve(async (req) => {
             status: o.orderStatus || "CONFIRMED",
             createdAt: o.createdAt,
             deliveryCode: o.delivery?.deliveryCode || "",
+            raw: o,
           });
         } else { await oRes.text(); }
       } catch (err) { console.error(`Error fetching order ${orderId}:`, err); }

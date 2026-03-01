@@ -129,10 +129,19 @@ export function OrderCard({ order, index, selectable, selected, onToggleSelect, 
 
               <div>
                 <label className="text-xs text-muted-foreground mb-1 block">Localizador</label>
-                <span className="text-sm font-mono text-foreground">{order.id.slice(0, 16)}...</span>
+                <span className="text-sm font-mono text-foreground">{order.displayId}</span>
               </div>
 
               {/* Confirmation section */}
+              {order.raw && (
+                <details className="text-xs text-muted-foreground bg-black/5 p-2 rounded mb-2 overflow-auto max-h-48">
+                  <summary className="cursor-pointer font-medium text-foreground">Ver Payload Original do iFood (Debug)</summary>
+                  <pre className="mt-2 text-[10px] break-all whitespace-pre-wrap font-mono uppercase">
+                    {JSON.stringify(order.raw, null, 2)}
+                  </pre>
+                </details>
+              )}
+              
               <div>
                 <div className="flex justify-between items-end mb-1">
                   <label className="text-xs text-muted-foreground block">

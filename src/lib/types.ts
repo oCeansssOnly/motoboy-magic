@@ -12,6 +12,7 @@ export interface IFoodOrder {
   status: string;
   createdAt: string;
   deliveryCode: string;
+  raw?: any;
   // Local state
   selected?: boolean;
   confirmationCode?: string;
