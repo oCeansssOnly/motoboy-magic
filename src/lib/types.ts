@@ -19,9 +19,11 @@ export interface IFoodOrder {
   confirmedLocally?: boolean;
 }
 
-export interface Motoboy {
+export interface CourierRoute {
   id: string;
   name: string;
+  orders: IFoodOrder[];
+  createdAt: string;
 }
 
 export function optimizeRoute(
