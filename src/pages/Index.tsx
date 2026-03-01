@@ -29,12 +29,36 @@ const Index = () => {
   const [needsAuth, setNeedsAuth] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
 
+  // Check auth status on load
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const { data } = await supabase.functions.invoke('ifood-auth', {
+          body: { action: 'check_status' },
+        });
+        setNeedsAuth(!data?.authenticated);
+      } catch {
+        setNeedsAuth(true);
+      } finally {
+        setCheckingAuth(false);
+      }
+    };
+    checkAuth();
+  }, []);
+
   const fetchOrders = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setNeedsAuth(false);
     try {
       const { data, error: fnError } = await supabase.functions.invoke('ifood-orders');
       
+      if (data?.needsAuth) {
+        setNeedsAuth(true);
+        setLoading(false);
+        return;
+      }
+
       if (fnError) throw fnError;
 
       if (data?.orders && Array.isArray(data.orders)) {
@@ -63,8 +87,10 @@ const Index = () => {
   }, []);
 
   useEffect(() => {
-    fetchOrders();
-  }, [fetchOrders]);
+    if (!needsAuth && !checkingAuth) {
+      fetchOrders();
+    }
+  }, [needsAuth, checkingAuth, fetchOrders]);
 
   // Get store location from browser
   useEffect(() => {
