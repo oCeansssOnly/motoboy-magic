@@ -64,6 +64,38 @@ Deno.serve(async (req: Request) => {
   try {
     const accessToken = await getAccessToken();
 
+    // ─ Fetch merchant list for store address (independent of order events) ───
+    let topLevelMerchantAddress: string | null = null;
+    let topLevelStoreLat: number | null = null;
+    let topLevelStoreLng: number | null = null;
+    try {
+      const mRes = await fetch(`${IFOOD_API}/merchant/v1.0/merchants`, {
+        headers: { "Authorization": `Bearer ${accessToken}` },
+      });
+      const mStatus = mRes.status;
+      const mBody = await safeJson(mRes) || [];
+      // Log for debug: inspect actual API response structure
+      console.log('[merchant-api] status:', mStatus, 'body:', JSON.stringify(mBody)?.slice(0, 500));
+      const merchants = Array.isArray(mBody) ? mBody : (mBody.merchants || []);
+      const first = merchants[0];
+      if (first) {
+        // Try every known field name for the address
+        const mAddr = first.address || first.mainAddress || first.corporateAddress || {};
+        const formatted = [
+          mAddr.streetName || mAddr.street || mAddr.logradouro || "",
+          mAddr.streetNumber || mAddr.number || mAddr.numero || "",
+          mAddr.complement || mAddr.complemento || "",
+          mAddr.neighborhood || mAddr.district || mAddr.bairro || "",
+          mAddr.city || mAddr.cidade || mAddr.locality || "",
+          mAddr.state || mAddr.estado || mAddr.province || "",
+        ].filter(Boolean).join(", ");
+        if (formatted) topLevelMerchantAddress = formatted;
+        const lat = mAddr.latitude || mAddr.coordinates?.latitude || first.latitude;
+        const lng = mAddr.longitude || mAddr.coordinates?.longitude || first.longitude;
+        if (lat) { topLevelStoreLat = lat; topLevelStoreLng = lng; }
+      }
+    } catch (e: any) { console.log('[merchant-api] error:', e?.message); }
+
     // Poll events
     const eventsRes = await fetch(`${IFOOD_API}/events/v1.0/events:polling`, {
       headers: { "Authorization": `Bearer ${accessToken}` },
@@ -78,20 +110,40 @@ Deno.serve(async (req: Request) => {
     }
 
     // Statuses we want to show in the restaurant queue
-    const SHOW_STATUSES = ["ACCEPTED", "DISPATCHED", "READY_TO_PICKUP", "CONFIRMED"];
+    const SHOW_STATUSES = ["ACCEPTED", "DISPATCHED", "READY_TO_PICKUP", "CONFIRMED", "PLACED"];
     const TERMINAL_STATUSES = new Set(["CONCLUDED", "CANCELLED", "CANCELLATION_REQUESTED", "CONSUMER_CANCELLED"]);
     const CANCELLED_STATUSES = new Set(["CANCELLED", "CANCELLATION_REQUESTED", "CONSUMER_CANCELLED"]);
-    const OWN_DELIVERY_MODES = ["DEFAULT", "RESTAURANT", "OWN", "PADRAO"];
+    const OWN_DELIVERY_MODES = ["DEFAULT", "RESTAURANT", "OWN", "PADRAO", "MERCHANT"];
 
+    // Comprehensive iFood event code map (v1 + v2 codes)
+    const evCodeMap: Record<string, string> = {
+      // New order / accepted
+      "PLC": "ACCEPTED", "CON": "ACCEPTED", "ACK": "ACCEPTED",
+      "ACCEPTED": "ACCEPTED", "ORDER_CREATED": "ACCEPTED",
+      "PLACED": "ACCEPTED", "CONFIRMED": "ACCEPTED",
+      // Ready to pickup
+      "RTP": "READY_TO_PICKUP", "READY_TO_PICKUP": "READY_TO_PICKUP",
+      // Dispatched / out for delivery
+      "DSP": "DISPATCHED", "DISPATCHED": "DISPATCHED",
+      "DDCR": "DISPATCHED", // Driver Dispatched – Consumer Route
+      "DDCS": "DISPATCHED", // Driver Dispatched – Consumer Start
+      "PREP": "DISPATCHED", // Preparing
+      "BADI": "DISPATCHED", // Bag dispatched
+      "ORDER_DISPATCHED": "DISPATCHED",
+      // Terminal – concluded
+      "COR": "CONCLUDED", "CONCLUDED": "CONCLUDED", "CDD": "CONCLUDED",
+      "ORDER_CONCLUDED": "CONCLUDED", "DELIVERED": "CONCLUDED",
+      // Terminal – cancelled
+      "CAN": "CANCELLED", "CANCELLED": "CANCELLED",
+      "CANCELLATION_REQUESTED": "CANCELLATION_REQUESTED",
+      "CONSUMER_CANCELLED": "CONSUMER_CANCELLED",
+    };
     const orders: any[] = [];
-    const concludedOrders: any[] = []; // fully delivered outside our app
-    const cancelledOrderIds: string[] = []; // cancelled — remove without stats
+    const concludedOrders: any[] = [];
+    const cancelledOrderIds: string[] = [];
     const debug: any[] = [];
     const eventIdsToAck: string[] = [];
     const processedOrderIds = new Set<string>();
-    let topLevelMerchantAddress: string | null = null;
-    let topLevelStoreLat: number | null = null;
-    let topLevelStoreLng: number | null = null;
 
     for (const ev of events) {
       const orderId = ev.orderId;
@@ -113,18 +165,9 @@ Deno.serve(async (req: Request) => {
 
         let status = (o.orderStatus || o.ORDERSTATUS || "").toUpperCase();
 
-        // iFood sandbox sends status in event code when order detail has empty orderStatus
+        // Map event codes → canonical status (covers all known iFood v1 + v2 codes)
         if (!status) {
-          const evCodeMap: Record<string, string> = {
-            "CON": "ACCEPTED", "ACK": "ACCEPTED", "ACCEPTED": "ACCEPTED",
-            "DSP": "DISPATCHED", "DISPATCHED": "DISPATCHED",
-            "DDCR": "DISPATCHED",
-            "RTP": "READY_TO_PICKUP",
-            // Terminal event codes — map so we can ack-and-discard below
-            "COR": "CONCLUDED", "CONCLUDED": "CONCLUDED",
-            "CAN": "CANCELLED", "CANCELLED": "CANCELLED",
-          };
-          const evCode = (ev.code || ev.fullCode || "").toUpperCase();
+          const evCode = (ev.code || ev.fullCode || ev.type || "").toUpperCase();
           status = evCodeMap[evCode] || "";
         }
         const delivery = o.delivery || o.DELIVERY || {};
