@@ -23,6 +23,7 @@ import { supabase } from "@/integrations/supabase/client";
 const POLL_INTERVAL = 30_000; // 30 seconds
 const LS_ROUTES_KEY = "courier_routes_v1";
 const LS_STORE_KEY = "store_coords_v1";
+const LS_DISMISSED_KEY = "dismissed_order_ids_v1";
 
 function loadRoutesFromStorage(): CourierRoute[] {
   try {
@@ -37,12 +38,28 @@ function saveRoutesToStorage(routes: CourierRoute[]) {
   localStorage.setItem(LS_ROUTES_KEY, JSON.stringify(routes));
 }
 
+function loadDismissedIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(LS_DISMISSED_KEY);
+    return raw ? new Set<string>(JSON.parse(raw)) : new Set<string>();
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function saveDismissedIds(ids: Set<string>) {
+  localStorage.setItem(LS_DISMISSED_KEY, JSON.stringify([...ids]));
+}
+
 const Index = () => {
   const [orders, setOrders] = useState<IFoodOrder[]>([]);
   const [courierRoutes, setCourierRoutes] = useState<CourierRoute[]>(loadRoutesFromStorage);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<"queue" | string>("queue"); // "queue" | routeId
   const [showAssignModal, setShowAssignModal] = useState(false);
+  // Track order IDs that have been assigned to a motoboy so they never
+  // re-appear in the main queue when iFood emits subsequent events for them.
+  const [dismissedOrderIds, setDismissedOrderIds] = useState<Set<string>>(loadDismissedIds);
 
   const [loading, setLoading] = useState(false);
   const [polling, setPolling] = useState(false);
@@ -72,6 +89,11 @@ const Index = () => {
     saveRoutesToStorage(courierRoutes);
   }, [courierRoutes]);
 
+  // Persist dismissed order IDs
+  useEffect(() => {
+    saveDismissedIds(dismissedOrderIds);
+  }, [dismissedOrderIds]);
+
   // Check auth on load
   useEffect(() => {
     (async () => {
@@ -95,20 +117,26 @@ const Index = () => {
   }, []);
 
   // Merge new orders without wiping existing local state (selected, confirmed, etc.)
+  // Dismissed orders (already assigned to motoboys) are silently ignored.
   const mergeOrders = useCallback((freshOrders: IFoodOrder[]) => {
-    setOrders((prev) => {
-      const existing = new Map(prev.map((o) => [o.id, o]));
-      let added = 0;
-      freshOrders.forEach((fresh) => {
-        if (!existing.has(fresh.id)) {
-          existing.set(fresh.id, { ...fresh, selected: false, confirmed: false, confirmationCode: "" });
-          added++;
+    setDismissedOrderIds((dismissed) => {
+      setOrders((prev) => {
+        const existing = new Map(prev.map((o) => [o.id, o]));
+        let added = 0;
+        freshOrders.forEach((fresh) => {
+          // Skip orders that are already in a motoboy route or have been dismissed
+          if (dismissed.has(fresh.id)) return;
+          if (!existing.has(fresh.id)) {
+            existing.set(fresh.id, { ...fresh, selected: false, confirmed: false, confirmationCode: "" });
+            added++;
+          }
+        });
+        if (added > 0) {
+          toast.success(`🆕 ${added} novo(s) pedido(s) chegaram!`, { duration: 5000 });
         }
+        return Array.from(existing.values());
       });
-      if (added > 0) {
-        toast.success(`🆕 ${added} novo(s) pedido(s) chegaram!`, { duration: 5000 });
-      }
-      return Array.from(existing.values());
+      return dismissed; // No change to dismissed set here
     });
   }, []);
 
@@ -217,8 +245,16 @@ const Index = () => {
       }
     });
 
-    // Remove assigned orders from main queue
+    // Mark assigned order IDs as dismissed so they never re-appear in the queue
+    // even if iFood emits new events for them (DISPATCHED, CONFIRMED, etc.)
     const assignedIds = new Set(selectedOrders.map((o) => o.id));
+    setDismissedOrderIds((prev) => {
+      const next = new Set(prev);
+      assignedIds.forEach((id) => next.add(id));
+      return next;
+    });
+
+    // Remove assigned orders from main queue
     setOrders((prev) => prev.filter((o) => !assignedIds.has(o.id)));
     setSelectedIds(new Set());
     setShowAssignModal(false);
@@ -227,6 +263,17 @@ const Index = () => {
   };
 
   const handleCloseCourierRoute = (routeId: string) => {
+    // When a route is closed, un-dismiss its orders so they can re-appear
+    // in the queue if they somehow come back from iFood (edge case).
+    const routeToClose = courierRoutes.find((r) => r.id === routeId);
+    if (routeToClose) {
+      const routeOrderIds = new Set(routeToClose.orders.map((o) => o.id));
+      setDismissedOrderIds((prev) => {
+        const next = new Set(prev);
+        routeOrderIds.forEach((id) => next.delete(id));
+        return next;
+      });
+    }
     setCourierRoutes((prev) => prev.filter((r) => r.id !== routeId));
     setActiveTab("queue");
     toast.info("Rota encerrada.");

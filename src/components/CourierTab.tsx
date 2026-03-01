@@ -153,6 +153,13 @@ function DeliveryCard({ order, index, routeId, onConfirmed }: DeliveryCardProps)
 
   const handleConfirm = async () => {
     if (!confirmCode.trim()) { toast.error("Informe o código de confirmação!"); return; }
+
+    // Strict validation: if iFood provided a delivery code, the entered code must match
+    if (order.deliveryCode && confirmCode.trim() !== order.deliveryCode) {
+      toast.error("Código inválido!", { description: "Verifique o código com o cliente." });
+      return;
+    }
+
     setConfirming(true);
     try {
       const { data, error } = await supabase.functions.invoke("ifood-confirm", {
@@ -240,13 +247,20 @@ function DeliveryCard({ order, index, routeId, onConfirmed }: DeliveryCardProps)
       {/* Confirmation */}
       {!order.confirmed && (
         <div className="pt-2 border-t border-border">
-          <label className="text-xs text-muted-foreground mb-1 block">Código de Confirmação</label>
+          <div className="flex justify-between items-end mb-1">
+            <label className="text-xs text-muted-foreground block">Código de Confirmação</label>
+            {order.deliveryCode && (
+              <span className="text-xs font-mono bg-primary/10 text-primary px-1.5 py-0.5 rounded">
+                Código iFood: <b>{order.deliveryCode}</b>
+              </span>
+            )}
+          </div>
           <div className="flex gap-2">
             <input
               type="text"
               value={confirmCode}
               onChange={(e) => setConfirmCode(e.target.value)}
-              placeholder="Código..."
+              placeholder="Código do cliente..."
               className="flex-1 bg-input border border-border rounded px-3 py-1.5 text-sm text-foreground focus:ring-1 focus:ring-primary outline-none font-mono"
             />
             <button
