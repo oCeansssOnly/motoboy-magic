@@ -12,6 +12,7 @@ export function IFoodSetup({ onAuthenticated }: IFoodSetupProps) {
   const [userCode, setUserCode] = useState('');
   const [verificationUrl, setVerificationUrl] = useState('');
   const [authCodeVerifier, setAuthCodeVerifier] = useState('');
+  const [authCodeInput, setAuthCodeInput] = useState('');
   const [error, setError] = useState('');
 
   const startAuth = async () => {
@@ -41,13 +42,18 @@ export function IFoodSetup({ onAuthenticated }: IFoodSetupProps) {
   };
 
   const exchangeToken = async () => {
+    if (!authCodeInput.trim()) {
+      setError('Por favor, cole o código de autorização gerado pelo iFood abaixo.');
+      return;
+    }
+
     setStep('exchanging');
     setError('');
     try {
       const { data, error: fnError } = await supabase.functions.invoke('ifood-auth', {
         body: {
           action: 'exchange_code',
-          authorizationCode: userCode,
+          authorizationCode: authCodeInput.trim(),
           authorizationCodeVerifier: authCodeVerifier,
         },
       });
@@ -116,9 +122,9 @@ export function IFoodSetup({ onAuthenticated }: IFoodSetupProps) {
           <div className="space-y-2">
             <p className="text-sm text-muted-foreground">
               1. Copie o código acima<br />
-              2. Acesse o link abaixo e cole o código<br />
-              3. Autorize o acesso à sua loja<br />
-              4. Volte aqui e clique em "Já Autorizei"
+              2. Acesse o link abaixo e cole o código para autorizar o acesso<br />
+              3. O portal do iFood irá gerar um <strong>Código de Autorização</strong><br />
+              4. Copie esse novo código, cole abaixo e clique em "Confirmar e Autenticar"
             </p>
             {verificationUrl && (
               <a
@@ -133,12 +139,23 @@ export function IFoodSetup({ onAuthenticated }: IFoodSetupProps) {
             )}
           </div>
 
+          <div className="pt-2">
+            <label className="text-xs text-muted-foreground mb-1 block">Cole o Código de Autorização retornado pelo iFood:</label>
+            <input
+              type="text"
+              value={authCodeInput}
+              onChange={(e) => setAuthCodeInput(e.target.value)}
+              placeholder="Ex: ABC123DEF"
+              className="w-full bg-secondary/50 border border-border rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+            />
+          </div>
+
           <button
             onClick={exchangeToken}
-            className="w-full py-3 rounded-lg bg-primary text-primary-foreground font-semibold text-sm hover:bg-primary/90 transition-all"
+            className="w-full py-3 rounded-lg bg-primary text-primary-foreground font-semibold text-sm hover:bg-primary/90 transition-all mt-2"
           >
             <CheckCircle size={16} className="inline mr-2" />
-            Já Autorizei
+            Confirmar e Autenticar
           </button>
         </div>
       )}

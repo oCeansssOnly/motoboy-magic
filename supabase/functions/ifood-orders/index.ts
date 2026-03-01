@@ -153,7 +153,7 @@ serve(async (req) => {
       orders: [],
       needsAuth: isAuthError,
     }), {
-      status: isAuthError ? 401 : 500,
+      status: isAuthError ? 200 : 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
