@@ -80,8 +80,11 @@ serve(async (req) => {
     });
 
     let events: any[] = [];
-    if (eventsRes.ok) {
-      events = await eventsRes.json();
+    if (eventsRes.status === 200) {
+      const text = await eventsRes.text();
+      if (text) {
+        events = JSON.parse(text);
+      }
       
       // Acknowledge events
       if (events.length > 0) {
@@ -94,7 +97,7 @@ serve(async (req) => {
           body: JSON.stringify(events.map((e: any) => ({ id: e.id }))),
         });
       }
-    } else if (eventsRes.status === 204) {
+    } else if (eventsRes.status === 204 || eventsRes.status === 202) {
       // No events - normal
       await eventsRes.text();
     } else {
@@ -116,8 +119,10 @@ serve(async (req) => {
           headers: { 'Authorization': `Bearer ${accessToken}` },
         });
         
-        if (orderRes.ok) {
-          const order = await orderRes.json();
+        if (orderRes.status === 200) {
+          const text = await orderRes.text();
+          if (!text) continue;
+          const order = JSON.parse(text);
           orders.push({
             id: order.id,
             displayId: order.displayId || order.id.slice(0, 8),
