@@ -14,9 +14,9 @@ function sbHeaders() {
     "Prefer": "return=representation",
   };
 }
-function sbUrl(p) { return `${Deno.env.get("SUPABASE_URL")}/rest/v1${p}`; }
+function sbUrl(p: string) { return `${Deno.env.get("SUPABASE_URL")}/rest/v1${p}`; }
 
-async function safeJson(res) {
+async function safeJson(res: Response) {
   try { const t = await res.text(); return t ? JSON.parse(t) : null; }
   catch { return null; }
 }
@@ -58,13 +58,7 @@ async function getAccessToken() {
   return data.accessToken;
 }
 
-function formatAddress(addr) {
-  if (!addr) return "Endereço não disponível";
-  return [addr.streetName, addr.streetNumber, addr.complement, addr.neighborhood, addr.city, addr.state]
-    .filter(Boolean).join(", ") || "Endereço não disponível";
-}
-
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
@@ -75,8 +69,7 @@ Deno.serve(async (req) => {
       headers: { "Authorization": `Bearer ${accessToken}` },
     });
 
-    // Poll events — don't acknowledge yet; we'll only ack orders we actually process
-    let events = [];
+    let events: any[] = [];
     if (eventsRes.status === 200) {
       const parsed = await safeJson(eventsRes);
       if (Array.isArray(parsed)) events = parsed;
@@ -84,110 +77,109 @@ Deno.serve(async (req) => {
       await eventsRes.text();
     }
 
-    const orderIds = events.map(e => e.orderId).filter(Boolean);
-    const uniqueIds = [...new Set(orderIds)];
-    const orders = [];
-
     // Statuses we want to show in the restaurant queue
-    const SHOW_STATUSES = ["ACCEPTED", "DISPATCHED", "READY_TO_PICKUP"];
-    // Delivery modes for restaurant's own fleet (not iFood partners or pickup)
-    const OWN_DELIVERY_MODES = ["DEFAULT", "RESTAURANT", "OWN"];
+    const SHOW_STATUSES = ["ACCEPTED", "DISPATCHED", "READY_TO_PICKUP", "CONFIRMED"];
+    // Delivery modes for restaurant's own fleet
+    const OWN_DELIVERY_MODES = ["DEFAULT", "RESTAURANT", "OWN", "PADRAO"];
 
-    // Track which event IDs to acknowledge (only accepted-or-later orders)
+    const orders: any[] = [];
+    const debug: any[] = [];
     const eventIdsToAck: string[] = [];
+    const processedOrderIds = new Set<string>();
 
-    for (const event of events) {
-      const orderId = event.orderId;
-      if (!orderId) { eventIdsToAck.push(event.id); continue; } // ack non-order events
-      if (!uniqueIds.includes(orderId)) continue;
-      // Remove from uniqueIds to avoid double-processing
-      uniqueIds.splice(uniqueIds.indexOf(orderId), 1);
+    for (const ev of events) {
+      const orderId = ev.orderId;
+      // Ack events without orderId
+      if (!orderId) { eventIdsToAck.push(ev.id); continue; }
+      // Deduplicate same orderId across multiple events
+      if (processedOrderIds.has(orderId)) { eventIdsToAck.push(ev.id); continue; }
 
       try {
         const oRes = await fetch(`${IFOOD_API}/order/v1.0/orders/${orderId}`, {
           headers: { "Authorization": `Bearer ${accessToken}` },
         });
-        if (oRes.status === 200) {
-          const o = await safeJson(oRes);
-          const id = o.id || o.ID;
-          if (!id) { eventIdsToAck.push(event.id); continue; }
 
-          const status = (o.orderStatus || o.ORDERSTATUS || "").toUpperCase();
+        if (oRes.status !== 200) { await oRes.text(); eventIdsToAck.push(ev.id); continue; }
 
-          // Skip orders not yet accepted — leave event un-acked so it reappears next poll
-          if (!SHOW_STATUSES.includes(status)) continue;
+        const o = await safeJson(oRes);
+        const id = o?.id || o?.ID;
+        if (!id) { eventIdsToAck.push(ev.id); continue; }
 
-          const delivery = o.delivery || o.DELIVERY || {};
-          const deliveryMode = (delivery.mode || delivery.MODE || "").toUpperCase();
+        const status = (o.orderStatus || o.ORDERSTATUS || "").toUpperCase();
+        const delivery = o.delivery || o.DELIVERY || {};
+        const deliveryMode = (delivery.mode || delivery.MODE || "").toUpperCase();
+        const orderType = (o.orderType || o.ORDERTYPE || "DELIVERY").toUpperCase();
 
-          // Only show own-delivery orders; skip pickup and partner delivery
-          const orderType = (o.orderType || o.ORDERTYPE || "").toUpperCase();
-          if (orderType === "TAKEOUT" || orderType === "PICKUP") { eventIdsToAck.push(event.id); continue; }
-          if (deliveryMode && !OWN_DELIVERY_MODES.some(m => deliveryMode.includes(m))) {
-            eventIdsToAck.push(event.id); continue;
-          }
+        // Always log for debug
+        debug.push({ evCode: ev.code || ev.fullCode, status, deliveryMode, orderType, orderId });
 
-          // Mark this event as processed
-          eventIdsToAck.push(event.id);
+        // Don't ack if order status not yet acceptable — will re-appear on next poll
+        if (!SHOW_STATUSES.includes(status)) continue;
 
-          const customer = o.customer || o.CUSTOMER || {};
-          const address = delivery.deliveryAddress || delivery.DELIVERYADDRESS || {};
-          const coords = address.coordinates || address.COORDINATES || {};
-          const totals = o.total || o.TOTAL || {};
-          const paymentsArr = o.payments || o.PAYMENTS || [];
-          const itemsArr = o.items || o.ITEMS || [];
-
-          const localizador = o.orderNumber || o.ORDERNUMBER || o.displayId || o.DISPLAYID || id.slice(0, 8);
-          const displayId = o.displayId || o.DISPLAYID || id.slice(0, 8);
-
-          const streetName = address.streetName || address.STREETNAME || "";
-          const streetNum  = address.streetNumber || address.STREETNUMBER || "";
-          const complement = address.complement || address.COMPLEMENT || "";
-          const neighborhood = address.neighborhood || address.NEIGHBORHOOD || "";
-          const city = address.city || address.CITY || "";
-          const state = address.state || address.STATE || "";
-          const addressStr = [streetName, streetNum, complement, neighborhood, city, state].filter(Boolean).join(", ") || "Endereço não disponível";
-
-          orders.push({
-            id,
-            displayId,
-            localizador,
-            customerName: customer.name || customer.NAME || "Cliente",
-            customerPhone: customer.phone?.number || customer.PHONE?.NUMBER || "",
-            address: addressStr,
-            lat: coords.latitude || coords.LATITUDE || 0,
-            lng: coords.longitude || coords.LONGITUDE || 0,
-            total: totals.orderAmount || totals.ORDERAMOUNT || 0,
-            paymentMethod: paymentsArr[0]?.methods?.[0]?.type || paymentsArr[0]?.METHODS?.[0]?.TYPE || "ONLINE",
-            items: itemsArr.map((i: any) => `${i.quantity || i.QUANTITY}x ${i.name || i.NAME}`).join(", ") || "",
-            status,
-            createdAt: o.createdAt || o.CREATEDAT,
-            deliveryCode: delivery.deliveryCode || delivery.DELIVERYCODE || o.CONFIRMATIONTOKEN || o.confirmationToken || "",
-            raw: o,
-          });
-        } else {
-          await oRes.text();
-          eventIdsToAck.push(event.id); // ack failed fetches to avoid infinite loops
+        // Ack-and-skip non-own-delivery orders
+        if (orderType === "TAKEOUT" || orderType === "PICKUP") { eventIdsToAck.push(ev.id); continue; }
+        if (deliveryMode && !OWN_DELIVERY_MODES.some(m => deliveryMode.includes(m))) {
+          eventIdsToAck.push(ev.id); continue;
         }
+
+        // This order is ready to show — ack and mark processed
+        eventIdsToAck.push(ev.id);
+        processedOrderIds.add(orderId);
+
+        const customer = o.customer || o.CUSTOMER || {};
+        const address = delivery.deliveryAddress || delivery.DELIVERYADDRESS || {};
+        const coords = address.coordinates || address.COORDINATES || {};
+        const totals = o.total || o.TOTAL || {};
+        const paymentsArr = o.payments || o.PAYMENTS || [];
+        const itemsArr = o.items || o.ITEMS || [];
+
+        const localizador = o.orderNumber || o.ORDERNUMBER || o.displayId || o.DISPLAYID || id.slice(0, 8);
+        const displayId = o.displayId || o.DISPLAYID || id.slice(0, 8);
+        const addressStr = [
+          address.streetName || address.STREETNAME || "",
+          address.streetNumber || address.STREETNUMBER || "",
+          address.complement || address.COMPLEMENT || "",
+          address.neighborhood || address.NEIGHBORHOOD || "",
+          address.city || address.CITY || "",
+          address.state || address.STATE || "",
+        ].filter(Boolean).join(", ") || "Endereço não disponível";
+
+        orders.push({
+          id, displayId, localizador,
+          customerName: customer.name || customer.NAME || "Cliente",
+          customerPhone: customer.phone?.number || customer.PHONE?.NUMBER || "",
+          address: addressStr,
+          lat: coords.latitude || coords.LATITUDE || 0,
+          lng: coords.longitude || coords.LONGITUDE || 0,
+          total: totals.orderAmount || totals.ORDERAMOUNT || 0,
+          paymentMethod: paymentsArr[0]?.methods?.[0]?.type || paymentsArr[0]?.METHODS?.[0]?.TYPE || "ONLINE",
+          items: itemsArr.map((i: any) => `${i.quantity || i.QUANTITY}x ${i.name || i.NAME}`).join(", ") || "",
+          status,
+          createdAt: o.createdAt || o.CREATEDAT,
+          deliveryCode: delivery.deliveryCode || delivery.DELIVERYCODE || o.CONFIRMATIONTOKEN || o.confirmationToken || "",
+          raw: o,
+        });
+
       } catch (err) {
-        console.error(`Error fetching order ${event.orderId}:`, err);
-        eventIdsToAck.push(event.id);
+        console.error(`Error fetching order ${orderId}:`, err);
+        eventIdsToAck.push(ev.id);
       }
     }
 
-    // Only acknowledge events we've fully processed
+    // Acknowledge only the events we've fully processed
     if (eventIdsToAck.length > 0) {
       await fetch(`${IFOOD_API}/events/v1.0/events/acknowledgment`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(eventIdsToAck.map(id => ({ id }))),
+        body: JSON.stringify(eventIdsToAck.map((i: string) => ({ id: i }))),
       });
     }
 
-    return new Response(JSON.stringify({ orders, eventsCount: events.length }), {
+    return new Response(JSON.stringify({ orders, eventsCount: events.length, debug }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
-  } catch (error) {
+
+  } catch (error: any) {
     const message = error?.message || "Unknown error";
     const isAuthError = message.includes("NOT_AUTHENTICATED");
     return new Response(JSON.stringify({ error: message, orders: [], needsAuth: isAuthError }), {
