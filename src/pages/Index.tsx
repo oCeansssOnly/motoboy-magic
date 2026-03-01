@@ -277,6 +277,10 @@ const Index = () => {
         if (data.merchantAddress) {
           setStoreAddress(data.merchantAddress);
           localStorage.setItem(LS_ADDRESS_KEY, data.merchantAddress);
+          // Also persist to app_settings so all clients share the same store address
+          supabase.from("app_settings" as any)
+            .upsert({ key: "store_address", value: data.merchantAddress, updated_at: new Date().toISOString() }, { onConflict: "key" })
+            .then(() => {});
         }
         // Use store coords from iFood if none set
         if (data.storeLat && data.storeLng) {
@@ -642,7 +646,7 @@ const Index = () => {
                 {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
                 Atualizar
               </button>
-              <ProfileMenu driverStats={isDriver ? driverStats : undefined} />
+              <ProfileMenu />
             </div>
           </div>
         </div>
@@ -662,7 +666,9 @@ const Index = () => {
                   </span>
                 )}
               </button>
-              {courierRoutes.map((r) => {
+              {courierRoutes
+                .filter((r) => r.orders.some((o) => !o.confirmed)) // only show routes with active orders
+                .map((r) => {
                 const active = r.orders.filter((o) => !o.confirmed).length;
                 return (
                   <button
@@ -671,9 +677,7 @@ const Index = () => {
                     className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 transition-all whitespace-nowrap ${activeTab === r.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
                   >
                     <Bike size={11} /> {r.name}
-                    {active > 0 && (
-                      <span className="px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground text-[10px]">{active}</span>
-                    )}
+                    <span className="px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground text-[10px]">{active}</span>
                   </button>
                 );
               })}

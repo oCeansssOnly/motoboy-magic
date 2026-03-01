@@ -318,11 +318,6 @@ function DeliveryCard({
       {/* ── Own route + dispatched: Confirmation ── */}
       {isOwnRoute && !order.confirmed && order.status === "DISPATCHED" && (
         <div className="pt-2 border-t border-border">
-          {order.deliveryCode && (
-            <p className="text-xs text-muted-foreground mb-1">
-              Código iFood: <span className="font-mono font-semibold text-primary">[{order.deliveryCode}]</span>
-            </p>
-          )}
           <label className="text-xs text-muted-foreground mb-1.5 block">🔒 Código de confirmação do cliente:</label>
           <div className="flex gap-2">
             <input type="text" inputMode="numeric" value={confirmCode}

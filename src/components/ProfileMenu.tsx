@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { LogOut, LayoutDashboard, Package, Bike, ChevronDown, Shield, User, TrendingUp } from "lucide-react";
+import { LogOut, LayoutDashboard, Bike, ChevronDown, Shield, TrendingUp } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
 function getMonthStart() {
@@ -8,16 +8,8 @@ function getMonthStart() {
   return new Date(d.getFullYear(), d.getMonth(), 1).toISOString();
 }
 
-interface DriverStats {
-  total: number;
-  thisMonth: number;
-}
 
-interface ProfileMenuProps {
-  driverStats?: DriverStats;
-}
-
-export function ProfileMenu({ driverStats }: ProfileMenuProps) {
+export function ProfileMenu() {
   const { user, profile, driver, isAdmin, isDriver, signOut } = useAuth();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -113,29 +105,6 @@ export function ProfileMenu({ driverStats }: ProfileMenuProps) {
                 <TrendingUp size={15} className="text-primary flex-shrink-0" />
                 Ver meu Perfil &amp; Métricas
               </button>
-            </div>
-          )}
-
-          {/* Driver stats summary (quick glance) */}
-          {isDriver && driverStats !== undefined && (
-            <div className="p-3 border-b border-border">
-              <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-2 px-1">Minhas Entregas</p>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="bg-secondary/50 rounded-lg p-2.5 text-center">
-                  <div className="flex items-center justify-center gap-1 text-muted-foreground mb-0.5">
-                    <Package size={11} />
-                    <span className="text-[10px]">Total</span>
-                  </div>
-                  <p className="text-lg font-bold text-foreground">{driverStats.total}</p>
-                </div>
-                <div className="bg-secondary/50 rounded-lg p-2.5 text-center">
-                  <div className="flex items-center justify-center gap-1 text-muted-foreground mb-0.5">
-                    <Package size={11} />
-                    <span className="text-[10px]">Este Mês</span>
-                  </div>
-                  <p className="text-lg font-bold text-foreground">{driverStats.thisMonth}</p>
-                </div>
-              </div>
             </div>
           )}
 
