@@ -146,7 +146,7 @@ interface DeliveryCardProps {
 }
 
 function DeliveryCard({ order, index, routeId, onConfirmed }: DeliveryCardProps) {
-  const [confirmCode, setConfirmCode] = useState(order.confirmationCode || "");
+  const [confirmCode, setConfirmCode] = useState(""); // always starts empty — courier must ask customer
   const [confirming, setConfirming] = useState(false);
 
   const timeAgo = order.createdAt ? getTimeAgo(order.createdAt) : "";
@@ -255,20 +255,16 @@ function DeliveryCard({ order, index, routeId, onConfirmed }: DeliveryCardProps)
       {/* Confirmation — only shown once the order is DISPATCHED (out for delivery) */}
       {!order.confirmed && order.status === "DISPATCHED" && (
         <div className="pt-2 border-t border-border">
-          <div className="flex justify-between items-end mb-1">
-            <label className="text-xs text-muted-foreground block">Código de Confirmação</label>
-            {order.deliveryCode && (
-              <span className="text-xs font-mono bg-primary/10 text-primary px-1.5 py-0.5 rounded">
-                Código iFood: <b>{order.deliveryCode}</b>
-              </span>
-            )}
-          </div>
+          <label className="text-xs text-muted-foreground mb-1.5 block">
+            🔒 Peça o código de confirmação ao cliente:
+          </label>
           <div className="flex gap-2">
             <input
-              type="text"
+              type="password"
+              inputMode="numeric"
               value={confirmCode}
               onChange={(e) => setConfirmCode(e.target.value)}
-              placeholder="Código do cliente..."
+              placeholder="Digite o código do cliente..."
               className="flex-1 bg-input border border-border rounded px-3 py-1.5 text-sm text-foreground focus:ring-1 focus:ring-primary outline-none font-mono"
             />
             <button
