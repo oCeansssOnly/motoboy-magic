@@ -79,6 +79,8 @@ Deno.serve(async (req: Request) => {
 
     // Statuses we want to show in the restaurant queue
     const SHOW_STATUSES = ["ACCEPTED", "DISPATCHED", "READY_TO_PICKUP", "CONFIRMED"];
+    // Orders in these statuses are fully done — ack the event and discard, never show again
+    const TERMINAL_STATUSES = new Set(["CONCLUDED", "CANCELLED", "CANCELLATION_REQUESTED", "CONSUMER_CANCELLED"]);
     // Delivery modes for restaurant's own fleet
     const OWN_DELIVERY_MODES = ["DEFAULT", "RESTAURANT", "OWN", "PADRAO"];
 
@@ -108,13 +110,15 @@ Deno.serve(async (req: Request) => {
         let status = (o.orderStatus || o.ORDERSTATUS || "").toUpperCase();
 
         // iFood sandbox sends status in event code when order detail has empty orderStatus
-        // CON = restaurant confirmed/accepted, DSP = dispatched, RTP = ready to pickup
         if (!status) {
           const evCodeMap: Record<string, string> = {
             "CON": "ACCEPTED", "ACK": "ACCEPTED", "ACCEPTED": "ACCEPTED",
             "DSP": "DISPATCHED", "DISPATCHED": "DISPATCHED",
-            "DDCR": "DISPATCHED", // Driver/courier created = dispatched
+            "DDCR": "DISPATCHED",
             "RTP": "READY_TO_PICKUP",
+            // Terminal event codes — map so we can ack-and-discard below
+            "COR": "CONCLUDED", "CONCLUDED": "CONCLUDED",
+            "CAN": "CANCELLED", "CANCELLED": "CANCELLED",
           };
           const evCode = (ev.code || ev.fullCode || "").toUpperCase();
           status = evCodeMap[evCode] || "";
@@ -126,7 +130,15 @@ Deno.serve(async (req: Request) => {
         // Always log for debug
         debug.push({ evCode: ev.code || ev.fullCode, status, deliveryMode, orderType, orderId });
 
-        // Don't ack if order status not yet acceptable — will re-appear on next poll
+        // Terminal orders (CONCLUDED, CANCELLED): ack and discard immediately.
+        // These are fully done on iFood — we must ack so iFood stops re-sending
+        // the event on every poll, which would eventually cause the order to reappear.
+        if (TERMINAL_STATUSES.has(status)) {
+          eventIdsToAck.push(ev.id);
+          continue;
+        }
+
+        // Status not yet in our accepted list — don't ack (let it retry next poll)
         if (!SHOW_STATUSES.includes(status)) continue;
 
         // Ack-and-skip non-own-delivery orders

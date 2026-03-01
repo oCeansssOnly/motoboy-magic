@@ -281,12 +281,19 @@ const Index = () => {
   const handleCloseCourierRoute = (routeId: string) => {
     const routeToClose = courierRoutes.find((r) => r.id === routeId);
     if (routeToClose) {
-      const routeOrderIds = routeToClose.orders.map((o) => o.id);
-      const nextDismissed = new Set(dismissedIdsRef.current);
-      routeOrderIds.forEach((id) => nextDismissed.delete(id));
-      dismissedIdsRef.current = nextDismissed;
-      setDismissedOrderIds(nextDismissed);
-      saveDismissedIds(nextDismissed);
+      // Only un-dismiss UNCONFIRMED orders when closing a route.
+      // Confirmed/delivered orders must stay dismissed so late iFood events
+      // (e.g. a delayed CONCLUDED event) never bring them back into the queue.
+      const toUndismiss = routeToClose.orders
+        .filter((o) => !o.confirmed)
+        .map((o) => o.id);
+      if (toUndismiss.length > 0) {
+        const nextDismissed = new Set(dismissedIdsRef.current);
+        toUndismiss.forEach((id) => nextDismissed.delete(id));
+        dismissedIdsRef.current = nextDismissed;
+        setDismissedOrderIds(nextDismissed);
+        saveDismissedIds(nextDismissed);
+      }
     }
     setCourierRoutes((prev) => prev.filter((r) => r.id !== routeId));
     setActiveTab("queue");
