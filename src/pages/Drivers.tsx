@@ -150,19 +150,6 @@ export default function Drivers() {
       </header>
 
       <main className="container py-5 max-w-2xl mx-auto space-y-4">
-        {/* Signup link banner */}
-        <div className="glass-card rounded-lg p-3 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <User size={14} />
-            Link de cadastro para motoristas:
-          </div>
-          <button
-            onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/motorista`); toast.success("Link copiado!"); }}
-            className="text-xs font-mono text-primary hover:underline truncate max-w-[180px]"
-          >
-            {window.location.origin}/motorista
-          </button>
-        </div>
 
         {loading && (
           <div className="text-center py-12">

@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 
-type AuthView = "signin" | "signup" | "pending" | "inactive" | "check_email";
+type AuthView = "signin" | "signup" | "check_email";
 
 export function AuthGate() {
   const { user, profile, driver, refreshProfile } = useAuth();
@@ -14,77 +14,103 @@ export function AuthGate() {
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Local flag: set immediately after signup so we show pending screen
+  // without waiting for AuthContext to re-fetch (avoids race condition)
+  const [justSignedUp, setJustSignedUp] = useState(false);
 
-  // ── Determine which screen to show ──────────────────────────────────────────
-  // After auth loads, show status screens instead of login form
-  if (user && profile) {
-    if (profile.role === "admin") return null; // Happy path — Index renders main UI
-    if (profile.role === "driver") {
-      if (driver?.status === "active") return null; // Happy path
-      if (driver?.status === "inactive") {
-        return <StatusScreen
-          icon={<ShieldAlert size={32} className="text-destructive" />}
-          title="Conta desativada"
-          message="Sua conta foi desativada pelo administrador. Entre em contato para mais informações."
-          color="destructive"
-          onSignOut={() => supabase.auth.signOut()}
-        />;
-      }
-      // pending (or no driver yet)
-      return <StatusScreen
-        icon={<Clock size={32} className="text-amber-400" />}
-        title="Aguardando aprovação"
-        message="Sua conta está pendente de aprovação pelo administrador. Você será notificado quando tiver acesso liberado."
-        color="amber"
-        onSignOut={() => supabase.auth.signOut()}
-      />;
-    }
+  // ── Status screens (post-auth) ───────────────────────────────────────────────
+  // Show pending if EITHER we just signed up locally OR the DB says pending
+  const isPending = justSignedUp ||
+    (user && profile?.role === "driver" && driver?.status !== "active" && driver?.status !== "inactive");
+  const isInactive = !justSignedUp &&
+    user && profile?.role === "driver" && driver?.status === "inactive";
+
+  if (user && profile?.role === "admin") return null; // Admin → show dashboard
+  if (user && profile?.role === "driver" && driver?.status === "active") return null; // Active driver → show dashboard
+
+  if (isInactive) {
+    return <StatusScreen
+      icon={<ShieldAlert size={32} className="text-destructive" />}
+      title="Conta desativada"
+      message="Sua conta foi desativada pelo administrador. Entre em contato para mais informações."
+      color="destructive"
+      onSignOut={() => supabase.auth.signOut()}
+    />;
   }
 
+  if (isPending) {
+    return <StatusScreen
+      icon={<Clock size={32} className="text-amber-400" />}
+      title="Aguardando aprovação"
+      message="Seu cadastro foi recebido com sucesso! Aguarde a aprovação do administrador para ter acesso ao sistema."
+      color="amber"
+      onSignOut={() => { setJustSignedUp(false); supabase.auth.signOut(); }}
+    />;
+  }
+
+  // ── Sign-in handler ──────────────────────────────────────────────────────────
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
-    if (error) toast.error("Erro ao entrar", { description: error.message });
+    if (error) {
+      const msg = error.message.toLowerCase();
+      if (msg.includes("invalid login") || msg.includes("invalid credentials")) {
+        toast.error("E-mail ou senha incorretos.");
+      } else {
+        toast.error("Erro ao entrar", { description: error.message });
+      }
+    }
   };
 
+  // ── Sign-up handler ──────────────────────────────────────────────────────────
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) { toast.error("Informe seu nome."); return; }
+    if (!name.trim()) { toast.error("Informe seu nome completo."); return; }
     setLoading(true);
-
     try {
-      // 1. Create the auth user
+      // 1. Create auth user (email confirmation is disabled at project level)
       const { data: authData, error: authErr } = await supabase.auth.signUp({ email, password });
-      if (authErr) { toast.error("Erro ao cadastrar", { description: authErr.message }); return; }
+      if (authErr) {
+        const msg = authErr.message.toLowerCase();
+        if (msg.includes("already registered") || msg.includes("user already exists")) {
+          toast.error("Este e-mail já está cadastrado. Tente entrar.");
+        } else if (msg.includes("rate limit") || msg.includes("too many")) {
+          toast.error("Muitas tentativas. Aguarde alguns minutos e tente novamente.");
+        } else {
+          toast.error("Erro ao cadastrar", { description: authErr.message });
+        }
+        return;
+      }
 
       const authUserId = authData.user?.id;
-      if (!authUserId) { setView("check_email"); return; }
+      if (!authUserId) {
+        // Email confirmation required — shouldn't happen since we disabled it
+        setView("check_email");
+        return;
+      }
 
-      // 2. Create the drivers row (pending)
+      // 2. Create the drivers profile row (pending)
       const { data: driverRow, error: driverErr } = await supabase
         .from("drivers")
         .insert({ name: name.trim(), status: "pending" })
         .select("id")
         .single();
+      if (driverErr) console.error("driver insert:", driverErr);
 
-      if (driverErr) { console.error("driver insert error:", driverErr); }
-
-      // 3. Create the user_profiles row linking to the driver
+      // 3. Create user_profiles linking auth user → driver
       const { error: profileErr } = await supabase
         .from("user_profiles")
         .insert({ auth_user_id: authUserId, role: "driver", driver_id: driverRow?.id ?? null });
+      if (profileErr) console.error("profile insert:", profileErr);
 
-      if (profileErr) { console.error("profile insert error:", profileErr); }
+      // 4. Show pending screen immediately (local flag prevents race condition
+      //    where AuthContext fires before rows are committed)
+      setJustSignedUp(true);
 
-      // 4. Refresh AuthContext so it picks up the new profile
+      // 5. Refresh AuthContext in the background
       await refreshProfile();
-
-      // If email confirmation is needed (user not confirmed yet)
-      if (!authData.session) {
-        setView("check_email");
-      }
     } finally {
       setLoading(false);
     }
@@ -94,17 +120,17 @@ export function AuthGate() {
     return <StatusScreen
       icon={<Mail size={32} className="text-primary" />}
       title="Confirme seu e-mail"
-      message={`Enviamos um link de confirmação para ${email}. Após confirmar, faça login para continuar.`}
+      message={`Enviamos um link para ${email}. Após confirmar, volte e faça login.`}
       color="primary"
       actionLabel="Voltar ao login"
-      onAction={() => { setView("signin"); }}
+      onAction={() => setView("signin")}
     />;
   }
 
+  // ── Login / signup form ──────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-6">
-        {/* Logo */}
         <div className="text-center space-y-2">
           <div className="w-16 h-16 rounded-2xl bg-primary/15 flex items-center justify-center mx-auto glow-primary">
             <Bike size={32} className="text-primary" />
@@ -129,7 +155,6 @@ export function AuthGate() {
             ))}
           </div>
 
-          {/* Form */}
           <form onSubmit={view === "signin" ? handleSignIn : handleSignUp} className="space-y-3">
             {view === "signup" && (
               <div>
@@ -147,7 +172,6 @@ export function AuthGate() {
                 </div>
               </div>
             )}
-
             <div>
               <label className="text-xs text-muted-foreground block mb-1">E-mail</label>
               <div className="relative">
@@ -162,7 +186,6 @@ export function AuthGate() {
                 />
               </div>
             </div>
-
             <div>
               <label className="text-xs text-muted-foreground block mb-1">Senha</label>
               <div className="relative">
@@ -179,7 +202,7 @@ export function AuthGate() {
                 <button
                   type="button"
                   onClick={() => setShowPw(p => !p)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                 >
                   {showPw ? <EyeOff size={14} /> : <Eye size={14} />}
                 </button>
@@ -199,7 +222,7 @@ export function AuthGate() {
 
           {view === "signup" && (
             <p className="text-xs text-muted-foreground text-center">
-              Novas contas aguardam aprovação do administrador antes de ter acesso.
+              Novas contas aguardam aprovação do administrador.
             </p>
           )}
         </div>
@@ -208,7 +231,7 @@ export function AuthGate() {
   );
 }
 
-// ── Reusable status/error screen ──────────────────────────────────────────────
+// ── Reusable status screen ────────────────────────────────────────────────────
 function StatusScreen({ icon, title, message, color, onSignOut, onAction, actionLabel }: {
   icon: React.ReactNode;
   title: string;
@@ -218,16 +241,11 @@ function StatusScreen({ icon, title, message, color, onSignOut, onAction, action
   onAction?: () => void;
   actionLabel?: string;
 }) {
-  const colorMap = {
-    primary: "bg-primary/15",
-    amber: "bg-amber-500/15",
-    destructive: "bg-destructive/15",
-  };
-
+  const colorCls = { primary: "bg-primary/15", amber: "bg-amber-500/15", destructive: "bg-destructive/15" };
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-6 text-center">
-        <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mx-auto ${colorMap[color]}`}>
+        <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mx-auto ${colorCls[color]}`}>
           {icon}
         </div>
         <div>
