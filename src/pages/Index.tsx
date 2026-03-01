@@ -172,6 +172,7 @@ const Index = () => {
       const { data } = await supabase
         .from("pending_orders")
         .select("id,display_id,localizador,customer_name,customer_phone,customer_address,lat,lng,total,payment_method,items,status,created_at,delivery_code")
+        .in("status", ["ACCEPTED", "DISPATCHED"])
         .order("received_at", { ascending: true });
 
       if (!data || data.length === 0) return;
@@ -465,6 +466,12 @@ const Index = () => {
     setDismissedOrderIds(nextDismissed);
     saveDismissedIds(nextDismissed);
 
+    // Update pending_orders status to IN_ROUTE so DB reflects the assignment
+    supabase.from("pending_orders")
+      .update({ status: "IN_ROUTE" })
+      .in("id", [...assignedIds])
+      .then(() => {});
+
     setOrders((prev) => prev.filter((o) => !assignedIds.has(o.id)));
     setSelectedIds(new Set());
     setAssigning(false);
@@ -541,6 +548,11 @@ const Index = () => {
           delivery_lat: order.lat || storeLat,
           delivery_lng: order.lng || storeLng,
         }).then(() => {});
+        // Mark order as completed in pending_orders table
+        supabase.from("pending_orders")
+          .update({ status: "COMPLETED" })
+          .eq("id", order.id)
+          .then(() => {});
       }
       return updated;
     });

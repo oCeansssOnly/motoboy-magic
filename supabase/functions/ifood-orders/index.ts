@@ -110,19 +110,24 @@ Deno.serve(async (req: Request) => {
     }
 
     // Statuses we want to show in the restaurant queue
-    const SHOW_STATUSES = ["ACCEPTED", "DISPATCHED", "READY_TO_PICKUP", "CONFIRMED", "PLACED"];
+    // Only show orders that the store has ACCEPTED for own delivery.
+    // PLACED = customer placed, not yet accepted. READY_TO_PICKUP = kitchen ready (iFood delivery).
+    const SHOW_STATUSES = ["ACCEPTED", "DISPATCHED"];
     const TERMINAL_STATUSES = new Set(["CONCLUDED", "CANCELLED", "CANCELLATION_REQUESTED", "CONSUMER_CANCELLED"]);
     const CANCELLED_STATUSES = new Set(["CANCELLED", "CANCELLATION_REQUESTED", "CONSUMER_CANCELLED"]);
     const OWN_DELIVERY_MODES = ["DEFAULT", "RESTAURANT", "OWN", "PADRAO", "MERCHANT"];
 
     // Comprehensive iFood event code map (v1 + v2 codes)
     const evCodeMap: Record<string, string> = {
-      // New order / accepted
-      "PLC": "ACCEPTED", "CON": "ACCEPTED", "ACK": "ACCEPTED",
-      "ACCEPTED": "ACCEPTED", "ORDER_CREATED": "ACCEPTED",
-      "PLACED": "ACCEPTED", "CONFIRMED": "ACCEPTED",
-      // Ready to pickup
+      // Store accepted the order → show in queue
+      "ACK": "ACCEPTED", "ACCEPTED": "ACCEPTED",
+      // Placed by customer but NOT yet accepted by store → do NOT show
+      "PLC": "PLACED", "PLACED": "PLACED",
+      // Restaurant confirmed to kitchen (iFood logistics) → do NOT show
+      "CON": "PLACED", "CONFIRMED": "PLACED",
+      // Ready to pickup (iFood delivery, not ours) → do NOT show
       "RTP": "READY_TO_PICKUP", "READY_TO_PICKUP": "READY_TO_PICKUP",
+      "ORDER_CREATED": "PLACED",
       // Dispatched / out for delivery
       "DSP": "DISPATCHED", "DISPATCHED": "DISPATCHED",
       "DDCR": "DISPATCHED", // Driver Dispatched – Consumer Route
