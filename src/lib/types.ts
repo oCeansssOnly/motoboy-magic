@@ -19,6 +19,7 @@ export interface IFoodOrder {
   confirmationCode?: string;
   confirmed?: boolean;
   confirmedLocally?: boolean;
+  cancelled?: boolean;          // true when iFood cancels while order is in-route
 }
 
 export interface NoContactOrder {

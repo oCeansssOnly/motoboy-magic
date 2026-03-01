@@ -296,19 +296,18 @@ const Index = () => {
       if (data?.needsAuth) { setNeedsAuth(true); return; }
       if (fnError) throw fnError;
       if (data?.orders && Array.isArray(data.orders)) {
-        // Capture + persist store address from real iFood merchant data
+        // Always apply store address and coords from iFood (source of truth)
         if (data.merchantAddress) {
           setStoreAddress(data.merchantAddress);
           localStorage.setItem(LS_ADDRESS_KEY, data.merchantAddress);
-          // Also persist to app_settings so all clients share the same store address
           supabase.from("app_settings" as any)
             .upsert({ key: "store_address", value: data.merchantAddress, updated_at: new Date().toISOString() }, { onConflict: "key" })
             .then(() => {});
         }
-        // Use store coords from iFood if none set
         if (data.storeLat && data.storeLng) {
-          setStoreLat(prev => prev === -23.55052 ? data.storeLat : prev);
-          setStoreLng(prev => prev === -46.633308 ? data.storeLng : prev);
+          setStoreLat(data.storeLat);
+          setStoreLng(data.storeLng);
+          localStorage.setItem(LS_STORE_KEY, JSON.stringify({ lat: data.storeLat, lng: data.storeLng }));
         }
         // Only toast 'orders processed' during non-silent loads (manual refresh)
         mergeOrders(data.orders);
@@ -319,46 +318,56 @@ const Index = () => {
         if (!silent) { setError(data.error); toast.error("Erro ao buscar pedidos", { description: data.error }); }
       }
 
-      // ── Sync concluded orders (finished outside our site) ──────────────────
+      // ── Sync concluded orders (confirmed externally on iFood — counts for stats) ──
       if (Array.isArray(data?.concludedOrders) && data.concludedOrders.length > 0) {
         const concluded = data.concludedOrders as { id: string; displayId: string; customerName: string; address: string; lat: number; lng: number; total: number }[];
         setCourierRoutes(prev => {
           const updated = prev.map(route => {
-            const toFinalize = route.orders.filter(o => concluded.some(c => c.id === o.id));
+            const toFinalize = route.orders.filter(o => concluded.some(c => c.id === o.id) && !o.confirmed);
             if (toFinalize.length === 0) return route;
-            // Save each concluded order to DB
             toFinalize.forEach(async order => {
               const cInfo = concluded.find(c => c.id === order.id)!;
               const distKm = haversineKm(storeLat, storeLng, cInfo.lat || order.lat, cInfo.lng || order.lng) * 2;
               await supabase.from("confirmed_orders").insert({
-                ifood_order_id: order.id,
-                customer_name: order.customerName,
-                customer_address: order.address,
-                motoboy_name: route.name,
+                ifood_order_id: order.id, customer_name: order.customerName,
+                customer_address: order.address, motoboy_name: route.name,
                 status: "concluded_by_ifood",
                 distance_km: Math.round(distKm * 10) / 10,
                 order_total_cents: order.total,
-                delivery_lat: cInfo.lat || order.lat,
-                delivery_lng: cInfo.lng || order.lng,
+                delivery_lat: cInfo.lat || order.lat, delivery_lng: cInfo.lng || order.lng,
               });
             });
-            return { ...route, orders: route.orders.filter(o => !concluded.some(c => c.id === o.id)) };
-          }).filter(r => r.orders.length > 0);
-          return updated;
+            // Mark confirmed so they appear greyed-out then route auto-closes
+            return { ...route, orders: route.orders.map(o => concluded.some(c => c.id === o.id) ? { ...o, confirmed: true } : o) };
+          });
+          return cleanupEmptyRoutes(updated);
         });
-        toast.info(`${data.concludedOrders.length} pedido(s) finalizado(s) pelo iFood e removido(s) das rotas.`, { duration: 6000 });
+        toast.info(`${data.concludedOrders.length} pedido(s) finalizado(s) pelo iFood.`, { duration: 6000 });
       }
 
-      // ── Remove cancelled orders from routes ─────────────────────────────────
+      // ── Cancelled orders: in-route → badge "Cancelado"; not yet assigned → purge ──
       if (Array.isArray(data?.cancelledOrderIds) && data.cancelledOrderIds.length > 0) {
-        const cancelled = new Set<string>(data.cancelledOrderIds);
-        setCourierRoutes(prev =>
-          prev.map(r => ({ ...r, orders: r.orders.filter(o => !cancelled.has(o.id)) }))
-            .filter(r => r.orders.length > 0)
-        );
-        setOrders(prev => prev.filter(o => !cancelled.has(o.id)));
-        toast.warning(`${data.cancelledOrderIds.length} pedido(s) cancelado(s) removido(s).`, { duration: 5000 });
+        const cancelledSet = new Set<string>(data.cancelledOrderIds);
+        // In-route: mark confirmed+cancelled so driver sees the badge (no stat saved)
+        setCourierRoutes(prev => {
+          const updated = prev.map(r => ({
+            ...r,
+            orders: r.orders.map(o =>
+              cancelledSet.has(o.id) && !o.confirmed ? { ...o, confirmed: true, cancelled: true } : o
+            ),
+          }));
+          return cleanupEmptyRoutes(updated);
+        });
+        // Not yet assigned: remove from queue + dismiss permanently
+        setOrders(prev => prev.filter(o => !cancelledSet.has(o.id)));
+        const nextDismissed = new Set(dismissedIdsRef.current);
+        data.cancelledOrderIds.forEach((id: string) => nextDismissed.add(id));
+        dismissedIdsRef.current = nextDismissed;
+        setDismissedOrderIds(nextDismissed);
+        saveDismissedIds(nextDismissed);
+        toast.warning(`${data.cancelledOrderIds.length} pedido(s) cancelado(s) pelo iFood.`, { duration: 5000 });
       }
+
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Erro desconhecido";
       if (!silent) { setError(msg); toast.error("Erro ao conectar com iFood"); }
@@ -771,8 +780,8 @@ const Index = () => {
           </div>
         </div>
 
-        {/* Tabs */}
-        {!needsAuth && !checkingAuth && (courierRoutes.length > 0 || noContactOrders.length > 0) && (
+        {/* Tabs — always visible when authenticated */}
+        {!needsAuth && !checkingAuth && (
           <div className="container pb-0 overflow-x-auto">
             <div className="flex gap-1 min-w-max">
               <button

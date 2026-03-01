@@ -118,20 +118,35 @@ export function CourierTab({
           <div className="mt-2">
             <button onClick={() => setCompletedOpen(!completedOpen)}
               className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-secondary/50 border border-border text-sm text-muted-foreground hover:text-foreground transition-all">
-              <span className="flex items-center gap-2"><Check size={14} />Entregues ({completedOrders.length})</span>
+              <span className="flex items-center gap-2">
+                <Check size={14} />
+                Entregues/Cancelados ({completedOrders.length})
+                {completedOrders.some(o => o.cancelled) && (
+                  <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 text-[10px] border border-red-500/30">
+                    {completedOrders.filter(o => o.cancelled).length} cancelado(s)
+                  </span>
+                )}
+              </span>
               {completedOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
             </button>
             {completedOpen && (
-              <div className="mt-2 space-y-2 opacity-70">
+              <div className="mt-2 space-y-2">
                 {completedOrders.map((order, i) => (
-                  <DeliveryCard key={order.id} order={order} index={i} routeId={route.id}
-                    isOwnRoute={isOwnRoute} isAdmin={isAdmin} ownerName={route.name}
-                    isPendingTransfer={false}
-                    onConfirmed={onOrderConfirmed}
-                    onNoContact={() => {}}
-                    onRequestTransfer={() => {}}
-                    onAdminReassign={() => {}}
-                  />
+                  <div key={order.id} className={`rounded-xl p-3 border ${order.cancelled ? 'border-red-500/30 bg-red-500/5 opacity-80' : 'border-border bg-secondary/30 opacity-70'}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-xs font-mono">#{order.displayId}</span>
+                          {order.cancelled
+                            ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30">❌ Cancelado pelo iFood</span>
+                            : <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent-foreground border border-border">✅ Entregue</span>
+                          }
+                        </div>
+                        <p className="text-sm text-muted-foreground truncate mt-0.5">{order.customerName}</p>
+                      </div>
+                      <span className="text-xs text-muted-foreground whitespace-nowrap">R$ {(order.total / 100).toFixed(2)}</span>
+                    </div>
+                  </div>
                 ))}
               </div>
             )}
