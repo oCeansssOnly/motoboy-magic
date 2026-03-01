@@ -76,6 +76,7 @@ const Index = () => {
   const dismissedIdsRef = useRef<Set<string>>(dismissedOrderIds);
 
   const [assigning, setAssigning] = useState(false);
+  const [cancellingRouteId, setCancellingRouteId] = useState<string | null>(null);
   const [storeAddress, setStoreAddress] = useState<string | null>(
     () => localStorage.getItem(LS_ADDRESS_KEY) || null
   );
@@ -459,23 +460,47 @@ const Index = () => {
     toast.success(`${ordersToAssign.length} pedido(s) atribuído(s) para ${courierName}!`);
   };
 
-  const handleCloseCourierRoute = (routeId: string) => {
+  const handleCloseCourierRoute = async (routeId: string) => {
     const routeToClose = courierRoutes.find((r) => r.id === routeId);
-    if (routeToClose) {
-      // Only un-dismiss UNCONFIRMED orders when closing a route.
-      // Confirmed/delivered orders must stay dismissed so late iFood events
-      // (e.g. a delayed CONCLUDED event) never bring them back into the queue.
-      const toUndismiss = routeToClose.orders
-        .filter((o) => !o.confirmed)
-        .map((o) => o.id);
-      if (toUndismiss.length > 0) {
-        const nextDismissed = new Set(dismissedIdsRef.current);
-        toUndismiss.forEach((id) => nextDismissed.delete(id));
-        dismissedIdsRef.current = nextDismissed;
-        setDismissedOrderIds(nextDismissed);
-        saveDismissedIds(nextDismissed);
+    if (!routeToClose) return;
+
+    // Collect active (unconfirmed) order IDs to cancel on iFood
+    const activeOrderIds = routeToClose.orders
+      .filter((o) => !o.confirmed)
+      .map((o) => o.id);
+
+    // Trigger iFood cancellation if there are active orders
+    if (activeOrderIds.length > 0) {
+      setCancellingRouteId(routeId);
+      try {
+        const { data } = await supabase.functions.invoke("ifood-cancel", {
+          body: { orderIds: activeOrderIds },
+        });
+        if (data?.cancelled?.length > 0) {
+          toast.success(`${data.cancelled.length} pedido(s) cancelado(s) no iFood.`);
+        }
+        if (data?.failed?.length > 0) {
+          toast.warning(`${data.failed.length} pedido(s) não foram cancelados no iFood (podem já estar finalizados).`);
+        }
+      } catch {
+        toast.warning("Não foi possível cancelar os pedidos no iFood, mas a rota foi encerrada.");
+      } finally {
+        setCancellingRouteId(null);
       }
     }
+
+    // Only un-dismiss UNCONFIRMED orders when closing a route.
+    // Confirmed/delivered orders must stay dismissed so late iFood events
+    // (e.g. a delayed CONCLUDED event) never bring them back into the queue.
+    const toUndismiss = activeOrderIds;
+    if (toUndismiss.length > 0) {
+      const nextDismissed = new Set(dismissedIdsRef.current);
+      toUndismiss.forEach((id) => nextDismissed.delete(id));
+      dismissedIdsRef.current = nextDismissed;
+      setDismissedOrderIds(nextDismissed);
+      saveDismissedIds(nextDismissed);
+    }
+
     setCourierRoutes((prev) => prev.filter((r) => r.id !== routeId));
     setActiveTab("queue");
     toast.info("Rota encerrada.");
@@ -679,7 +704,8 @@ const Index = () => {
             currentDriverName={isDriver ? driver?.name ?? null : null}
             isAdmin={isAdmin}
             outgoingPending={outgoingPending}
-            onClose={() => handleCloseCourierRoute(activeRouteData.id)}
+            onEndRoute={() => handleCloseCourierRoute(activeRouteData.id)}
+            cancelling={cancellingRouteId === activeRouteData.id}
             onOrderConfirmed={handleOrderConfirmed}
             onRequestTransfer={(order, ownerName) => requestTransfer(order, ownerName)}
             onAdminReassign={(fromRouteId, orderId, toDriver) => handleAdminReassign(fromRouteId, orderId, toDriver)}

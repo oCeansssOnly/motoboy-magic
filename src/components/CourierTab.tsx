@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
+import { EndRouteModal } from "@/components/EndRouteModal";
 
 interface CourierTabProps {
   route: CourierRoute;
@@ -16,7 +17,10 @@ interface CourierTabProps {
   isAdmin: boolean;
   /** Order IDs that this driver has already sent a transfer request for */
   outgoingPending: Set<string>;
-  onClose: () => void;
+  /** Called after admin holds-to-confirm end route */
+  onEndRoute: () => void;
+  /** True while the admin-triggered iFood cancellation is in progress */
+  cancelling?: boolean;
   onOrderConfirmed: (routeId: string, orderId: string, code: string) => void;
   /** Driver requests a transfer — only for non-owners */
   onRequestTransfer: (order: IFoodOrder, ownerName: string) => void;
@@ -26,10 +30,11 @@ interface CourierTabProps {
 
 export function CourierTab({
   route, storeLat, storeLng, currentDriverName, isAdmin,
-  outgoingPending, onClose, onOrderConfirmed, onRequestTransfer, onAdminReassign,
+  outgoingPending, onEndRoute, cancelling, onOrderConfirmed, onRequestTransfer, onAdminReassign,
 }: CourierTabProps) {
   const [completedOpen, setCompletedOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [showEndModal, setShowEndModal] = useState(false);
 
   const activeOrders = route.orders.filter(o => !o.confirmed);
   const completedOrders = route.orders.filter(o => o.confirmed);
@@ -52,89 +57,114 @@ export function CourierTab({
   };
 
   return (
-    <div className="space-y-4">
-      {/* Header */}
-      <div className="glass-card rounded-lg p-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-primary/15 flex items-center justify-center"><Bike size={18} className="text-primary" /></div>
-          <div>
-            <p className="font-semibold text-foreground">{route.name}</p>
-            <p className="text-xs text-muted-foreground">
-              {activeOrders.length} ativa(s) · {completedOrders.length} entregue(s)
-              {route.startLat && route.startLat !== storeLat && <span className="ml-1.5 text-primary">· 📍 GPS</span>}
-            </p>
-          </div>
-        </div>
-        <button onClick={onClose} className="text-muted-foreground hover:text-destructive transition-colors p-1"><X size={18} /></button>
-      </div>
-
-      {/* Route actions */}
-      {activeOrders.length > 0 && (
-        <div className="glass-card rounded-lg p-3 space-y-2">
-          <p className="text-xs text-muted-foreground">
-            <Navigation size={11} className="inline mr-1" />
-            {route.startLat && route.startLat !== storeLat ? "Posição atual" : "Loja"} → {optimized.map(o => o.customerName).join(" → ")} → Loja
-          </p>
-          <div className="flex gap-2">
-            <button onClick={openRoute} className="flex-1 py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-all flex items-center justify-center gap-2 glow-primary">
-              <Navigation size={14} /> Abrir Rota
-            </button>
-            <button onClick={copyRoute} className="flex-1 py-2.5 rounded-lg bg-secondary text-secondary-foreground text-sm font-medium hover:bg-secondary/80 transition-all border border-border flex items-center justify-center gap-2">
-              {copied ? <Check size={14} className="text-primary" /> : <Copy size={14} />}
-              {copied ? "Copiado!" : "Copiar"}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {activeOrders.length === 0 && completedOrders.length > 0 && (
-        <div className="text-center py-6">
-          <div className="w-12 h-12 rounded-xl bg-accent/20 flex items-center justify-center mx-auto mb-3"><Check size={22} className="text-accent-foreground" /></div>
-          <p className="text-sm font-medium text-foreground">Todas as entregas concluídas! 🎉</p>
-        </div>
-      )}
-
-      <div className="space-y-3">
-        {optimized.map((order, i) => (
-          <DeliveryCard
-            key={order.id}
-            order={order}
-            index={i}
-            routeId={route.id}
-            isOwnRoute={isOwnRoute}
-            isAdmin={isAdmin}
-            ownerName={route.name}
-            isPendingTransfer={outgoingPending.has(order.id)}
-            onConfirmed={onOrderConfirmed}
-            onRequestTransfer={() => onRequestTransfer(order, route.name)}
-            onAdminReassign={(toDriver) => onAdminReassign(route.id, order.id, toDriver)}
-          />
-        ))}
-      </div>
-
-      {completedOrders.length > 0 && (
-        <div className="mt-2">
-          <button onClick={() => setCompletedOpen(!completedOpen)}
-            className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-secondary/50 border border-border text-sm text-muted-foreground hover:text-foreground transition-all">
-            <span className="flex items-center gap-2"><Check size={14} />Entregues ({completedOrders.length})</span>
-            {completedOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          </button>
-          {completedOpen && (
-            <div className="mt-2 space-y-2 opacity-70">
-              {completedOrders.map((order, i) => (
-                <DeliveryCard key={order.id} order={order} index={i} routeId={route.id}
-                  isOwnRoute={isOwnRoute} isAdmin={isAdmin} ownerName={route.name}
-                  isPendingTransfer={false}
-                  onConfirmed={onOrderConfirmed}
-                  onRequestTransfer={() => {}}
-                  onAdminReassign={() => {}}
-                />
-              ))}
+    <>
+      <div className="space-y-4">
+        {/* Header */}
+        <div className="glass-card rounded-lg p-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-primary/15 flex items-center justify-center"><Bike size={18} className="text-primary" /></div>
+            <div>
+              <p className="font-semibold text-foreground">{route.name}</p>
+              <p className="text-xs text-muted-foreground">
+                {activeOrders.length} ativa(s) · {completedOrders.length} entregue(s)
+                {route.startLat && route.startLat !== storeLat && <span className="ml-1.5 text-primary">· 📍 GPS</span>}
+              </p>
             </div>
+          </div>
+          {/* Admin-only: End Route button (opens confirmation modal) */}
+          {isAdmin && (
+            <button
+              onClick={() => setShowEndModal(true)}
+              title="Encerrar rota"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-destructive border border-destructive/30 hover:bg-destructive/10 transition-all"
+            >
+              <X size={13} />
+              Encerrar
+            </button>
           )}
         </div>
+
+        {/* Route actions */}
+        {activeOrders.length > 0 && (
+          <div className="glass-card rounded-lg p-3 space-y-2">
+            <p className="text-xs text-muted-foreground">
+              <Navigation size={11} className="inline mr-1" />
+              {route.startLat && route.startLat !== storeLat ? "Posição atual" : "Loja"} → {optimized.map(o => o.customerName).join(" → ")} → Loja
+            </p>
+            <div className="flex gap-2">
+              <button onClick={openRoute} className="flex-1 py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-all flex items-center justify-center gap-2 glow-primary">
+                <Navigation size={14} /> Abrir Rota
+              </button>
+              <button onClick={copyRoute} className="flex-1 py-2.5 rounded-lg bg-secondary text-secondary-foreground text-sm font-medium hover:bg-secondary/80 transition-all border border-border flex items-center justify-center gap-2">
+                {copied ? <Check size={14} className="text-primary" /> : <Copy size={14} />}
+                {copied ? "Copiado!" : "Copiar"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {activeOrders.length === 0 && completedOrders.length > 0 && (
+          <div className="text-center py-6">
+            <div className="w-12 h-12 rounded-xl bg-accent/20 flex items-center justify-center mx-auto mb-3"><Check size={22} className="text-accent-foreground" /></div>
+            <p className="text-sm font-medium text-foreground">Todas as entregas concluídas! 🎉</p>
+          </div>
+        )}
+
+        <div className="space-y-3">
+          {optimized.map((order, i) => (
+            <DeliveryCard
+              key={order.id}
+              order={order}
+              index={i}
+              routeId={route.id}
+              isOwnRoute={isOwnRoute}
+              isAdmin={isAdmin}
+              ownerName={route.name}
+              isPendingTransfer={outgoingPending.has(order.id)}
+              onConfirmed={onOrderConfirmed}
+              onRequestTransfer={() => onRequestTransfer(order, route.name)}
+              onAdminReassign={(toDriver) => onAdminReassign(route.id, order.id, toDriver)}
+            />
+          ))}
+        </div>
+
+        {completedOrders.length > 0 && (
+          <div className="mt-2">
+            <button onClick={() => setCompletedOpen(!completedOpen)}
+              className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-secondary/50 border border-border text-sm text-muted-foreground hover:text-foreground transition-all">
+              <span className="flex items-center gap-2"><Check size={14} />Entregues ({completedOrders.length})</span>
+              {completedOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </button>
+            {completedOpen && (
+              <div className="mt-2 space-y-2 opacity-70">
+                {completedOrders.map((order, i) => (
+                  <DeliveryCard key={order.id} order={order} index={i} routeId={route.id}
+                    isOwnRoute={isOwnRoute} isAdmin={isAdmin} ownerName={route.name}
+                    isPendingTransfer={false}
+                    onConfirmed={onOrderConfirmed}
+                    onRequestTransfer={() => {}}
+                    onAdminReassign={() => {}}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Admin End Route confirmation modal */}
+      {showEndModal && (
+        <EndRouteModal
+          route={route}
+          cancelling={cancelling}
+          onCancel={() => setShowEndModal(false)}
+          onConfirm={() => {
+            setShowEndModal(false);
+            onEndRoute();
+          }}
+        />
       )}
-    </div>
+    </>
   );
 }
 
@@ -166,6 +196,10 @@ function DeliveryCard({
 
   const handleConfirm = async () => {
     if (!confirmCode.trim()) { toast.error("Informe o código de confirmação!"); return; }
+    if (order.deliveryCode && confirmCode.trim() !== order.deliveryCode) {
+      toast.error("Código inválido!", { description: "Verifique o código com o cliente." });
+      return;
+    }
     setConfirming(true);
     try {
       const { data, error } = await supabase.functions.invoke("ifood-confirm", {
@@ -288,11 +322,16 @@ function DeliveryCard({
       {/* ── Own route + dispatched: Confirmation ── */}
       {isOwnRoute && !order.confirmed && order.status === "DISPATCHED" && (
         <div className="pt-2 border-t border-border">
+          {order.deliveryCode && (
+            <p className="text-xs text-muted-foreground mb-1">
+              Código iFood: <span className="font-mono font-semibold text-primary">[{order.deliveryCode}]</span>
+            </p>
+          )}
           <label className="text-xs text-muted-foreground mb-1.5 block">🔒 Código de confirmação do cliente:</label>
           <div className="flex gap-2">
             <input type="text" inputMode="numeric" value={confirmCode}
               onChange={e => setConfirmCode(e.target.value)}
-              placeholder="Digite o código..." 
+              placeholder="Digite o código..."
               className="flex-1 bg-input border border-border rounded px-3 py-1.5 text-sm text-foreground focus:ring-1 focus:ring-primary outline-none font-mono" />
             <button onClick={handleConfirm} disabled={confirming}
               className="px-3 py-1.5 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-all flex items-center gap-1.5 disabled:opacity-50">
