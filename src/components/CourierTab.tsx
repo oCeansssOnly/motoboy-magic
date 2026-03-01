@@ -196,10 +196,6 @@ function DeliveryCard({
 
   const handleConfirm = async () => {
     if (!confirmCode.trim()) { toast.error("Informe o código de confirmação!"); return; }
-    if (order.deliveryCode && confirmCode.trim() !== order.deliveryCode) {
-      toast.error("Código inválido!", { description: "Verifique o código com o cliente." });
-      return;
-    }
     setConfirming(true);
     try {
       const { data, error } = await supabase.functions.invoke("ifood-confirm", {
@@ -208,7 +204,7 @@ function DeliveryCard({
       if (error) throw error;
       if (!data?.success) {
         toast.error(data?.invalidCode ? "Código inválido!" : "Erro ao confirmar.", {
-          description: data?.invalidCode ? "O código não confere." : data?.error,
+          description: data?.invalidCode ? "O código não confere com o iFood." : data?.error,
         });
         return;
       }
