@@ -4,6 +4,9 @@ import { OrderCard } from "@/components/OrderCard";
 import { IFoodSetup } from "@/components/IFoodSetup";
 import { CourierTab } from "@/components/CourierTab";
 import { AssignCourierModal } from "@/components/AssignCourierModal";
+import { LoginModal } from "@/components/LoginModal";
+import { ProfileMenu } from "@/components/ProfileMenu";
+import { useAuth } from "@/contexts/AuthContext";
 import { IFoodOrder, CourierRoute, optimizeRoute, generateGoogleMapsUrl } from "@/lib/types";
 import {
   Navigation,
@@ -17,6 +20,7 @@ import {
   AlertCircle,
   Bike,
   Radio,
+  LogIn,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -54,6 +58,9 @@ function saveDismissedIds(ids: Set<string>) {
 
 const Index = () => {
   const navigate = useNavigate();
+  const { user, isDriver, driver } = useAuth();
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [driverStats, setDriverStats] = useState({ total: 0, thisMonth: 0 });
   const [orders, setOrders] = useState<IFoodOrder[]>([]);
   const [courierRoutes, setCourierRoutes] = useState<CourierRoute[]>(loadRoutesFromStorage);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -122,6 +129,23 @@ const Index = () => {
       () => {}
     );
   }, []);
+
+  // Driver delivery stats (for ProfileMenu)
+  useEffect(() => {
+    if (!isDriver || !driver) { setDriverStats({ total: 0, thisMonth: 0 }); return; }
+    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+    supabase
+      .from("confirmed_orders")
+      .select("confirmed_at")
+      .eq("motoboy_name", driver.name)
+      .then(({ data }) => {
+        const all = data || [];
+        setDriverStats({
+          total: all.length,
+          thisMonth: all.filter(o => o.confirmed_at >= monthStart).length,
+        });
+      });
+  }, [isDriver, driver]);
 
   // Merge new orders without wiping existing local state.
   // Uses ref so it always sees the current dismissed set — no nested setState.
@@ -343,13 +367,6 @@ const Index = () => {
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => navigate("/admin/motoristas")}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all text-sm"
-              >
-                <Bike size={14} />
-                Motoristas
-              </button>
-              <button
                 onClick={() => fetchOrders(false)}
                 disabled={loading || polling}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all text-sm"
@@ -357,6 +374,17 @@ const Index = () => {
                 {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
                 Atualizar
               </button>
+              {user ? (
+                <ProfileMenu driverStats={isDriver ? driverStats : undefined} />
+              ) : (
+                <button
+                  onClick={() => setShowLoginModal(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-all text-sm font-medium"
+                >
+                  <LogIn size={14} />
+                  Entrar
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -570,6 +598,10 @@ const Index = () => {
           onConfirm={handleAssignCourier}
           onCancel={() => setShowAssignModal(false)}
         />
+      )}
+
+      {showLoginModal && (
+        <LoginModal onClose={() => setShowLoginModal(false)} />
       )}
     </div>
   );
