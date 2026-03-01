@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { OrderCard } from "@/components/OrderCard";
+import { IFoodSetup } from "@/components/IFoodSetup";
 import { IFoodOrder, optimizeRoute, generateGoogleMapsUrl } from "@/lib/types";
 import {
   Navigation,
@@ -11,6 +12,7 @@ import {
   Loader2,
   Package,
   AlertCircle,
+  Settings,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
