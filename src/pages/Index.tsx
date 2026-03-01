@@ -508,15 +508,9 @@ const Index = () => {
     toast.success(`${ordersToAssign.length} pedido(s) atribuído(s) para ${courierName}!`);
   };
 
-  const handleCloseCourierRoute = async (routeId: string) => {
-    const routeToClose = courierRoutes.find((r) => r.id === routeId);
-    if (!routeToClose) return;
 
-    // Collect active (unconfirmed) order IDs to cancel on iFood
-    const activeOrderIds = routeToClose.orders
-      .filter((o) => !o.confirmed)
-      .map((o) => o.id);
   // ── No-Contact handler ─────────────────────────────────────────────────────
+
   // Called when a driver or admin marks an order as "No Contact".
   // Removes order from the driver's route (auto-closes route if now empty),
   // and inserts into no_contact_orders so any driver can retry.
