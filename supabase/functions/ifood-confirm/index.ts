@@ -3,7 +3,6 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const IFOOD_API = "https://merchant-api.ifood.com.br";
 const IFOOD_AUTH_URL = "https://merchant-api.ifood.com.br/authentication/v1.0/oauth/token";
 
 function sbHeaders() {
@@ -20,8 +19,8 @@ async function getAccessToken(): Promise<string> {
   const clientId = Deno.env.get("IFOOD_CLIENT_ID");
   const clientSecret = Deno.env.get("IFOOD_CLIENT_SECRET");
 
-  // Try stored (user-authenticated) token first — has the most permissions
-  const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/rest/v1/ifood_tokens?select=*&order=created_at.desc&limit=1`, {
+  // Try the stored user-authenticated token first (has broadest permissions)
+  const res = await fetch(sbUrl("/ifood_tokens?select=*&order=created_at.desc&limit=1"), {
     headers: sbHeaders(),
   });
   const text = await res.text();
@@ -31,34 +30,42 @@ async function getAccessToken(): Promise<string> {
     const token = tokens[0];
     if (new Date(token.expires_at) > new Date()) return token.access_token;
 
-    // Refresh
+    // Refresh expired token
     const rRes = await fetch(IFOOD_AUTH_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grantType: "refresh_token", clientId, clientSecret, refreshToken: token.refresh_token }),
+      body: new URLSearchParams({
+        grantType: "refresh_token",
+        clientId,
+        clientSecret,
+        refreshToken: token.refresh_token,
+      }),
     });
-    const rData = rRes.ok ? JSON.parse(await rRes.text()) : null;
-    if (rData?.accessToken) {
-      await fetch(`${Deno.env.get("SUPABASE_URL")}/rest/v1/ifood_tokens?id=eq.${token.id}`, {
-        method: "PATCH",
-        headers: sbHeaders(),
-        body: JSON.stringify({
-          access_token: rData.accessToken,
-          refresh_token: rData.refreshToken || token.refresh_token,
-          expires_at: new Date(Date.now() + (rData.expiresIn || 3600) * 1000).toISOString(),
-        }),
-      });
-      return rData.accessToken;
+    if (rRes.ok) {
+      const rData = JSON.parse(await rRes.text());
+      if (rData?.accessToken) {
+        await fetch(sbUrl(`/ifood_tokens?id=eq.${token.id}`), {
+          method: "PATCH",
+          headers: sbHeaders(),
+          body: JSON.stringify({
+            access_token: rData.accessToken,
+            refresh_token: rData.refreshToken || token.refresh_token,
+            expires_at: new Date(Date.now() + (rData.expiresIn || 3600) * 1000).toISOString(),
+          }),
+        });
+        return rData.accessToken;
+      }
     }
   }
 
-  // Fallback: client_credentials (lower access but works for some endpoints)
+  // Fallback: client_credentials
   const authRes = await fetch(IFOOD_AUTH_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ grantType: "client_credentials", clientId, clientSecret }),
   });
-  const data = authRes.ok ? JSON.parse(await authRes.text()) : null;
+  if (!authRes.ok) throw new Error("Falha na autenticação iFood.");
+  const data = JSON.parse(await authRes.text());
   if (!data?.accessToken) throw new Error("Falha na autenticação iFood.");
   return data.accessToken;
 }
@@ -73,60 +80,60 @@ Deno.serve(async (req: Request) => {
       orderId = body?.orderId || "";
       confirmationCode = body?.confirmationCode || "";
       motoboyName = body?.motoboyName || "Motoboy";
-    } catch { /* empty */ }
+    } catch { /* empty body */ }
 
     if (!orderId || !confirmationCode) {
-      return new Response(JSON.stringify({ error: "orderId and confirmationCode are required" }), {
+      return new Response(JSON.stringify({ success: false, error: "orderId and confirmationCode are required" }), {
         status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // 1. Get an access token
+    // Get iFood access token
     let accessToken = "";
-    let authError = "";
     try { accessToken = await getAccessToken(); }
-    catch (e: any) { authError = e.message; }
-
-    // 2. Call iFood order conclude endpoint to confirm delivery
-    //    POST /order/v1.0/orders/{orderId}/conclude
-    //    This moves the order to CONCLUDED status in iFood.
-    let apiSuccess = false;
-    let apiMessage = "";
-
-    if (accessToken) {
-      try {
-        const concludeRes = await fetch(
-          `${IFOOD_API}/order/v1.0/orders/${orderId}/conclude`,
-          {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-            },
-          }
-        );
-        const body = await concludeRes.text();
-
-        if (concludeRes.ok || concludeRes.status === 202) {
-          apiSuccess = true;
-          apiMessage = "Pedido concluído via API iFood!";
-        } else if (concludeRes.status === 410) {
-          // 410 = order already in terminal state — treat as success
-          apiSuccess = true;
-          apiMessage = "Pedido já estava concluído.";
-        } else {
-          apiMessage = `iFood retornou ${concludeRes.status}: ${body}`;
-          console.error("conclude failed:", apiMessage);
-        }
-      } catch (e: any) {
-        apiMessage = `Erro na chamada iFood: ${e.message}`;
-        console.error(apiMessage);
-      }
-    } else {
-      apiMessage = `Sem token: ${authError}`;
+    catch (e: any) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Falha na autenticação: ${e.message}`,
+      }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // 3. Record the confirmation in Supabase regardless of API result
+    // ── Step 1: Verify the delivery code via iFood API ──────────────────────
+    // POST /logistics/v1.0/orders/{id}/verifyDeliveryCode
+    // iFood validates the code the customer showed the courier.
+    // If { success: true }, the delivery is confirmed on iFood's side.
+    const verifyRes = await fetch(
+      `https://merchant-api.ifood.com.br/logistics/v1.0/orders/${orderId}/verifyDeliveryCode`,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ code: confirmationCode }),
+      }
+    );
+
+    const verifyBody = await verifyRes.text();
+    let verifyData: any = null;
+    try { verifyData = verifyBody ? JSON.parse(verifyBody) : null; } catch { /* ignore */ }
+
+    // iFood returns { success: true } if the code matches, { success: false } otherwise.
+    // A non-2xx status (e.g. 400, 404) also means failure.
+    const codeValid = verifyRes.ok && verifyData?.success === true;
+
+    if (!codeValid) {
+      // Code is wrong — do NOT record anything, return failure to the client
+      const reason = verifyData?.message || verifyData?.error
+        || (verifyRes.ok ? "Código incorreto" : `iFood retornou ${verifyRes.status}: ${verifyBody}`);
+      return new Response(JSON.stringify({
+        success: false,
+        invalidCode: true,
+        error: reason,
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    // ── Step 2: Code is valid — record the confirmed delivery in Supabase ───
     const insertRes = await fetch(sbUrl("/confirmed_orders"), {
       method: "POST",
       headers: sbHeaders(),
@@ -134,7 +141,7 @@ Deno.serve(async (req: Request) => {
         ifood_order_id: orderId,
         confirmation_code: confirmationCode,
         motoboy_name: motoboyName,
-        status: apiSuccess ? "concluded_api" : "concluded_manual",
+        status: "concluded_api",
         customer_name: "",
         customer_address: "",
         order_code: orderId,
@@ -147,11 +154,7 @@ Deno.serve(async (req: Request) => {
 
     return new Response(JSON.stringify({
       success: true,
-      apiConfirmed: apiSuccess,
-      message: apiSuccess
-        ? apiMessage
-        : "Confirmação salva localmente. Confirme manualmente no painel iFood se necessário.",
-      details: apiMessage,
+      message: "Entrega confirmada com sucesso via iFood!",
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   } catch (error: any) {

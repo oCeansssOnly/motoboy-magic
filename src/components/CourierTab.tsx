@@ -154,31 +154,24 @@ function DeliveryCard({ order, index, routeId, onConfirmed }: DeliveryCardProps)
   const handleConfirm = async () => {
     if (!confirmCode.trim()) { toast.error("Informe o código de confirmação!"); return; }
 
-    // Block if iFood hasn't provided a pickupCode — never accept unknown/placeholder codes
-    if (!order.deliveryCode) {
-      toast.error("Código não disponível", {
-        description: "O iFood não enviou o código para este pedido. Aguarde a atualização do status.",
-      });
-      return;
-    }
-
-    // Strict validation: entered code must exactly match the iFood pickupCode
-    if (confirmCode.trim() !== order.deliveryCode) {
-      toast.error("Código inválido!", { description: "Verifique o código com o cliente." });
-      return;
-    }
-
     setConfirming(true);
     try {
       const { data, error } = await supabase.functions.invoke("ifood-confirm", {
         body: { orderId: order.id, confirmationCode: confirmCode.trim(), motoboyName: "Motoboy" },
       });
       if (error) throw error;
-      if (data?.apiConfirmed) {
-        toast.success(`✅ Pedido ${order.displayId} confirmado via API!`);
-      } else {
-        toast.success(`Pedido ${order.displayId} salvo como entregue.`, { description: data?.message });
+
+      if (!data?.success) {
+        // iFood rejected the code
+        if (data?.invalidCode) {
+          toast.error("Código inválido!", { description: "O código não confere com o do cliente no iFood." });
+        } else {
+          toast.error("Erro ao confirmar.", { description: data?.error || "Tente novamente." });
+        }
+        return;
       }
+
+      toast.success(`✅ Pedido ${order.displayId} confirmado via iFood!`);
       onConfirmed(routeId, order.id, confirmCode.trim());
     } catch {
       toast.error("Erro ao confirmar. Tente novamente.");
