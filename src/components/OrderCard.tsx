@@ -136,20 +136,12 @@ export function OrderCard({ order, index, selectable, selected, onToggleSelect, 
 
               <div>
                 <label className="text-xs text-muted-foreground mb-1 block">Localizador</label>
-                <span className="text-sm font-mono text-foreground">{order.displayId}</span>
+                <span className="text-sm font-mono text-foreground">{order.localizador || order.displayId}</span>
               </div>
 
-              {/* Confirmation section */}
-              {order.raw && (
-                <details className="text-xs text-muted-foreground bg-black/5 p-2 rounded mb-2 overflow-auto max-h-48">
-                  <summary className="cursor-pointer font-medium text-foreground">Ver Payload Original do iFood (Debug)</summary>
-                  <pre className="mt-2 text-[10px] break-all whitespace-pre-wrap font-mono uppercase">
-                    {JSON.stringify(order.raw, null, 2)}
-                  </pre>
-                </details>
-              )}
-              
-              <div>
+              {/* Confirmation section — only visible in courier tab when order is already dispatched */}
+              {showConfirmation && order.status === 'DISPATCHED' && (
+                <div className="pt-2 border-t border-border">
                 <div className="flex justify-between items-end mb-1">
                   <label className="text-xs text-muted-foreground block">
                     Código de Confirmação
@@ -189,6 +181,7 @@ export function OrderCard({ order, index, selectable, selected, onToggleSelect, 
                   </button>
                 </div>
               </div>
+              )}
 
               {order.lat !== 0 && (
                 <a

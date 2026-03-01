@@ -1,6 +1,7 @@
 export interface IFoodOrder {
   id: string;
   displayId: string;
+  localizador?: string;
   customerName: string;
   customerPhone: string;
   address: string;

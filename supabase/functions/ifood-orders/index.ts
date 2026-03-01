@@ -90,12 +90,13 @@ Deno.serve(async (req) => {
       await eventsRes.text();
     }
 
-    // Fetch orders
-    const orderIds = events
-      .filter(e => ["PLC", "CFM", "RTP", "PLACED", "CONFIRMED", "READY_TO_PICKUP"].includes(e.code || e.fullCode))
-      .map(e => e.orderId);
+    // Poll events — accept all event codes, we filter by status after fetching order details
+    const orderIds = events.map(e => e.orderId).filter(Boolean);
     const uniqueIds = [...new Set(orderIds)];
     const orders = [];
+
+    // Statuses we want to show in the restaurant queue
+    const ACCEPTED_STATUSES = ["ACCEPTED", "DISPATCHED", "READY_TO_PICKUP", "CONCLUDED"];
 
     for (const orderId of uniqueIds) {
       try {
@@ -106,29 +107,50 @@ Deno.serve(async (req) => {
           const o = await safeJson(oRes);
           const id = o.id || o.ID;
           if (!id) continue;
-          
+
+          const status = (o.orderStatus || o.ORDERSTATUS || "").toUpperCase();
+
+          // Only show orders that the store has already ACCEPTED (not just PLACED/CONFIRMED)
+          if (!ACCEPTED_STATUSES.includes(status)) continue;
+
           const delivery = o.delivery || o.DELIVERY || {};
           const customer = o.customer || o.CUSTOMER || {};
-          const address = delivery?.deliveryAddress || delivery?.DELIVERYADDRESS || {};
-          const coords = address?.coordinates || address?.COORDINATES || {};
+          // Try all known casing variants for address
+          const address = delivery.deliveryAddress || delivery.DELIVERYADDRESS || {};
+          const coords = address.coordinates || address.COORDINATES || {};
           const totals = o.total || o.TOTAL || {};
           const paymentsArr = o.payments || o.PAYMENTS || [];
           const itemsArr = o.items || o.ITEMS || [];
 
+          // The true customer-facing order number (localizador)
+          // iFood uses "orderNumber" (camelCase) or "ORDERNUMBER" (uppercase sandbox)
+          const localizador = o.orderNumber || o.ORDERNUMBER || o.displayId || o.DISPLAYID || id.slice(0, 8);
+          const displayId = o.displayId || o.DISPLAYID || id.slice(0, 8);
+
+          // Build address string checking uppercase variant keys too
+          const streetName = address.streetName || address.STREETNAME || "";
+          const streetNum  = address.streetNumber || address.STREETNUMBER || "";
+          const complement = address.complement || address.COMPLEMENT || "";
+          const neighborhood = address.neighborhood || address.NEIGHBORHOOD || "";
+          const city = address.city || address.CITY || "";
+          const state = address.state || address.STATE || "";
+          const addressStr = [streetName, streetNum, complement, neighborhood, city, state].filter(Boolean).join(", ") || "Endereço não disponível";
+
           orders.push({
-            id: id,
-            displayId: o.displayId || o.DISPLAYID || id.slice(0, 8),
-            customerName: customer?.name || customer?.NAME || "Cliente",
-            customerPhone: customer?.phone?.number || customer?.PHONE?.NUMBER || "",
-            address: formatAddress(address) || formatAddress(o.DELIVERY?.DELIVERYADDRESS) || "",
-            lat: coords?.latitude || coords?.LATITUDE || 0,
-            lng: coords?.longitude || coords?.LONGITUDE || 0,
-            total: totals?.orderAmount || totals?.ORDERAMOUNT || 0,
-            paymentMethod: paymentsArr?.[0]?.methods?.[0]?.type || paymentsArr?.[0]?.METHODS?.[0]?.TYPE || "ONLINE",
+            id,
+            displayId,
+            localizador,
+            customerName: customer.name || customer.NAME || "Cliente",
+            customerPhone: customer.phone?.number || customer.PHONE?.NUMBER || "",
+            address: addressStr,
+            lat: coords.latitude || coords.LATITUDE || 0,
+            lng: coords.longitude || coords.LONGITUDE || 0,
+            total: totals.orderAmount || totals.ORDERAMOUNT || 0,
+            paymentMethod: paymentsArr[0]?.methods?.[0]?.type || paymentsArr[0]?.METHODS?.[0]?.TYPE || "ONLINE",
             items: itemsArr.map((i: any) => `${i.quantity || i.QUANTITY}x ${i.name || i.NAME}`).join(", ") || "",
-            status: o.orderStatus || o.ORDERSTATUS || "CONFIRMED",
+            status,
             createdAt: o.createdAt || o.CREATEDAT,
-            deliveryCode: delivery?.deliveryCode || delivery?.DELIVERYCODE || "",
+            deliveryCode: delivery.deliveryCode || delivery.DELIVERYCODE || o.CONFIRMATIONTOKEN || o.confirmationToken || "",
             raw: o,
           });
         } else { await oRes.text(); }
