@@ -182,11 +182,13 @@ export function useTransferRequests({
   }, [myName, fetchAndApplyApproval]); // fetchAndApplyApproval is stable (useCallback [])
 
   // ── Polling fallback: catch approved requests missed by Realtime ───────────
-  // Runs every 3 s; picks up any "approved" rows that Realtime may have dropped.
+  // Runs every 3 s; also exposed as triggerPoll for instant checks.
+  const pollRef = useRef<() => Promise<void>>(async () => {});
+
   useEffect(() => {
     if (!myName) return;
 
-    const poll = async () => {
+    const pollFn = async () => {
       const { data } = await supabase
         .from("transfer_requests")
         .select("id")
@@ -198,10 +200,14 @@ export function useTransferRequests({
       await Promise.all(data.map(row => fetchAndApplyApproval(row.id)));
     };
 
-    poll(); // run immediately on mount
-    const interval = setInterval(poll, 3_000); // 3s — fast fallback
+    pollRef.current = pollFn;
+    pollFn(); // run immediately on mount
+    const interval = setInterval(pollFn, 3_000); // 3s fallback
     return () => clearInterval(interval);
   }, [myName, fetchAndApplyApproval]);
+
+  /** Trigger an immediate poll — call right after requestTransfer for near-zero latency */
+  const triggerPoll = useCallback(() => { void pollRef.current(); }, []);
 
   const requestTransfer = useCallback(async (order: IFoodOrder, currentOwnerName: string): Promise<boolean> => {
     if (!myName) return false;
@@ -241,6 +247,7 @@ export function useTransferRequests({
     outgoingPending,
     pendingNotifications,
     requestTransfer,
+    triggerPoll,
     approveIncoming,
     rejectIncoming,
   };

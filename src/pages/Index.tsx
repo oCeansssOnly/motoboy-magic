@@ -129,7 +129,7 @@ const Index = () => {
     toast.success("Pedido transferido com sucesso! Confira sua rota.");
   }, []); // deps intentionally empty — reads driverRef.current to avoid stale closure
 
-  const { incomingRequest, outgoingPending, requestTransfer, approveIncoming, rejectIncoming } = useTransferRequests({
+  const { incomingRequest, outgoingPending, requestTransfer, triggerPoll, approveIncoming, rejectIncoming } = useTransferRequests({
     myName: isDriver ? (driver?.name ?? null) : null,
     onOrderApproved: handleOrderApproved,
     storeLat,
@@ -360,15 +360,7 @@ const Index = () => {
     }
   }, [mergeOrders]);
 
-  // Initial fetch + polling
-  useEffect(() => {
-    if (needsAuth || checkingAuth) return;
-    fetchOrders(false);
-    pollingRef.current = setInterval(() => fetchOrders(true), POLL_INTERVAL);
-    return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
-  }, [needsAuth, checkingAuth, fetchOrders]);
-
-  // Load persisted orders on auth confirmed, then start polling
+  // Initial load + polling (single effect — do NOT duplicate)
   useEffect(() => {
     if (needsAuth || checkingAuth) return;
     loadPersistedOrders();
@@ -498,17 +490,23 @@ const Index = () => {
     if (activeOrderIds.length > 0) {
       setCancellingRouteId(routeId);
       try {
-        const { data } = await supabase.functions.invoke("ifood-cancel", {
+        const { data, error } = await supabase.functions.invoke("ifood-cancel", {
           body: { orderIds: activeOrderIds },
         });
-        if (data?.cancelled?.length > 0) {
-          toast.success(`${data.cancelled.length} pedido(s) cancelado(s) no iFood.`);
+        if (error) throw error;
+        const cancelled = data?.cancelled ?? [];
+        const failed = data?.failed ?? [];
+        if (cancelled.length > 0) {
+          toast.success(`${cancelled.length} pedido(s) cancelado(s) no iFood.`);
         }
-        if (data?.failed?.length > 0) {
-          toast.warning(`${data.failed.length} pedido(s) não foram cancelados no iFood (podem já estar finalizados).`);
+        if (failed.length > 0) {
+          toast.warning(`${failed.length} pedido(s) não foram cancelados no iFood.`);
         }
-      } catch {
-        toast.warning("Não foi possível cancelar os pedidos no iFood, mas a rota foi encerrada.");
+        if (!data?.success && data?.error) {
+          toast.error(`Erro ao cancelar no iFood: ${data.error}`);
+        }
+      } catch (e: any) {
+        toast.warning(`Não foi possível cancelar os pedidos no iFood: ${e?.message ?? "erro desconhecido"}.`);
       } finally {
         setCancellingRouteId(null);
       }
@@ -755,7 +753,7 @@ const Index = () => {
             onEndRoute={() => handleCloseCourierRoute(activeRouteData.id)}
             cancelling={cancellingRouteId === activeRouteData.id}
             onOrderConfirmed={handleOrderConfirmed}
-            onRequestTransfer={(order, ownerName) => requestTransfer(order, ownerName)}
+            onRequestTransfer={(order, ownerName) => { requestTransfer(order, ownerName); triggerPoll(); }}
             onAdminReassign={(fromRouteId, orderId, toDriver) => handleAdminReassign(fromRouteId, orderId, toDriver)}
           />
         )}
