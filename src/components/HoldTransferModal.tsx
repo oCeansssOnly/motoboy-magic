@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { X, ArrowRightLeft, MapPin, User, AlertCircle } from "lucide-react";
+import { ArrowRightLeft, MapPin, AlertCircle } from "lucide-react";
 import { IFoodOrder } from "@/lib/types";
 
 const HOLD_DURATION_MS = 3000; // 3 seconds
@@ -49,20 +49,16 @@ export function HoldTransferModal({
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4"
       style={{ background: "rgba(0,0,0,0.70)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
     >
       <div className="glass-card rounded-2xl w-full max-w-sm overflow-hidden animate-slide-up shadow-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 pt-5 pb-3">
+        <div className="flex items-center px-5 pt-5 pb-3">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-xl bg-amber-500/15 flex items-center justify-center">
               <ArrowRightLeft size={16} className="text-amber-400" />
             </div>
             <span className="font-semibold text-foreground text-sm">Solicitação de Transferência</span>
           </div>
-          <button onClick={onCancel} className="text-muted-foreground hover:text-foreground transition-colors">
-            <X size={18} />
-          </button>
         </div>
 
         {/* Who wants it */}

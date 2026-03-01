@@ -511,13 +511,31 @@ const Index = () => {
   };
 
   const handleOrderConfirmed = (routeId: string, orderId: string, code: string) => {
-    setCourierRoutes((prev) =>
-      prev.map((r) =>
+    setCourierRoutes((prev) => {
+      const updated = prev.map((r) =>
         r.id === routeId
           ? { ...r, orders: r.orders.map((o) => o.id === orderId ? { ...o, confirmed: true, confirmationCode: code } : o) }
           : r
-      )
-    );
+      );
+      // Persist confirmed delivery to DB for driver analytics
+      const route = prev.find(r => r.id === routeId);
+      const order = route?.orders.find(o => o.id === orderId);
+      if (route && order) {
+        const distKm = haversineKm(storeLat, storeLng, order.lat || storeLat, order.lng || storeLng) * 2;
+        supabase.from("confirmed_orders").insert({
+          ifood_order_id: order.id,
+          customer_name: order.customerName,
+          customer_address: order.address,
+          motoboy_name: route.name,
+          status: "confirmed",
+          distance_km: Math.round(distKm * 10) / 10,
+          order_total_cents: order.total,
+          delivery_lat: order.lat || storeLat,
+          delivery_lng: order.lng || storeLng,
+        }).then(() => {});
+      }
+      return updated;
+    });
   };
 
   // ── Order transfer (driver takes order from another route) ──────────────────
@@ -932,7 +950,7 @@ const Index = () => {
           toDriverName={incomingRequest.requester_name}
           onCancel={rejectIncoming}
           onApprove={() => {
-            // Remove order from my local route
+            // Remove order from my local route then switch to queue
             setCourierRoutes(prev =>
               prev.map(r =>
                 r.orders.some(o => o.id === incomingRequest.order_id)
@@ -940,6 +958,7 @@ const Index = () => {
                   : r
               ).filter(r => r.orders.length > 0)
             );
+            setActiveTab("queue");
             approveIncoming();
           }}
         />

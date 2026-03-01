@@ -124,7 +124,7 @@ export function useTransferRequests({
             );
             lat = pos.coords.latitude; lng = pos.coords.longitude;
           } catch { /* store fallback */ }
-          onOrderApproved(req.order_data, lat, lng);
+          onOrderApproved({ ...req.order_data, confirmed: false }, lat, lng);
           setOutgoingPending(prev => { const n = new Set(prev); n.delete(req.order_id); return n; });
           await supabase.from("transfer_requests").update({ status: "completed" }).eq("id", req.id);
           sendBrowserNotification("✅ Transferência aprovada!", `Pedido #${req.order_data?.displayId} está na sua rota.`, `approved-${req.id}`);
