@@ -25,8 +25,9 @@ const Index = () => {
   const [copied, setCopied] = useState(false);
   const [storeLat, setStoreLat] = useState<number>(-23.55052);
   const [storeLng, setStoreLng] = useState<number>(-46.633308);
-  const [storeAddress, setStoreAddress] = useState('');
   const [showStoreConfig, setShowStoreConfig] = useState(false);
+  const [needsAuth, setNeedsAuth] = useState(false);
+  const [checkingAuth, setCheckingAuth] = useState(true);
 
   const fetchOrders = useCallback(async () => {
     setLoading(true);
