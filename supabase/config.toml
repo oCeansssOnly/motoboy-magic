@@ -1,1 +1,7 @@
 project_id = "yggbukplsmpbhkkiwsse"
+
+[functions.ifood-orders]
+verify_jwt = false
+
+[functions.ifood-confirm]
+verify_jwt = false
