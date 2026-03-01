@@ -105,7 +105,20 @@ Deno.serve(async (req: Request) => {
         const id = o?.id || o?.ID;
         if (!id) { eventIdsToAck.push(ev.id); continue; }
 
-        const status = (o.orderStatus || o.ORDERSTATUS || "").toUpperCase();
+        let status = (o.orderStatus || o.ORDERSTATUS || "").toUpperCase();
+
+        // iFood sandbox sends status in event code when order detail has empty orderStatus
+        // CON = restaurant confirmed/accepted, DSP = dispatched, RTP = ready to pickup
+        if (!status) {
+          const evCodeMap: Record<string, string> = {
+            "CON": "ACCEPTED", "ACK": "ACCEPTED", "ACCEPTED": "ACCEPTED",
+            "DSP": "DISPATCHED", "DISPATCHED": "DISPATCHED",
+            "DDCR": "DISPATCHED", // Driver/courier created = dispatched
+            "RTP": "READY_TO_PICKUP",
+          };
+          const evCode = (ev.code || ev.fullCode || "").toUpperCase();
+          status = evCodeMap[evCode] || "";
+        }
         const delivery = o.delivery || o.DELIVERY || {};
         const deliveryMode = (delivery.mode || delivery.MODE || "").toUpperCase();
         const orderType = (o.orderType || o.ORDERTYPE || "DELIVERY").toUpperCase();
