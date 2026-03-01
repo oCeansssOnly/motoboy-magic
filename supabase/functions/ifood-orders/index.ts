@@ -143,7 +143,9 @@ Deno.serve(async (req: Request) => {
         const address = delivery.deliveryAddress || delivery.DELIVERYADDRESS || {};
         const coords = address.coordinates || address.COORDINATES || {};
         const totals = o.total || o.TOTAL || {};
-        const paymentsArr = o.payments || o.PAYMENTS || [];
+        // payments can be an object { methods: [] } OR an array depending on API version
+        const paymentsObj = o.payments || o.PAYMENTS || {};
+        const paymentMethods = Array.isArray(paymentsObj) ? paymentsObj : (paymentsObj.methods || []);
         const itemsArr = o.items || o.ITEMS || [];
 
         const localizador = o.orderNumber || o.ORDERNUMBER || o.displayId || o.DISPLAYID || id.slice(0, 8);
@@ -165,11 +167,12 @@ Deno.serve(async (req: Request) => {
           lat: coords.latitude || coords.LATITUDE || 0,
           lng: coords.longitude || coords.LONGITUDE || 0,
           total: totals.orderAmount || totals.ORDERAMOUNT || 0,
-          paymentMethod: paymentsArr[0]?.methods?.[0]?.type || paymentsArr[0]?.METHODS?.[0]?.TYPE || "ONLINE",
+          paymentMethod: paymentMethods[0]?.type || paymentMethods[0]?.method || "ONLINE",
           items: itemsArr.map((i: any) => `${i.quantity || i.QUANTITY}x ${i.name || i.NAME}`).join(", ") || "",
           status,
           createdAt: o.createdAt || o.CREATEDAT,
-          deliveryCode: delivery.deliveryCode || delivery.DELIVERYCODE || o.CONFIRMATIONTOKEN || o.confirmationToken || "",
+          // pickupCode is the delivery confirmation code in iFood (required by courier to confirm delivery)
+          deliveryCode: delivery.pickupCode || delivery.PICKUPCODE || delivery.deliveryCode || delivery.DELIVERYCODE || o.confirmationCode || "",
           raw: o,
         });
 

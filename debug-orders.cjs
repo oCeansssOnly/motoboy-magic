@@ -10,9 +10,16 @@ async function main() {
     body: JSON.stringify({})
   });
   const data = await res.json();
-  console.log("eventsCount:", data.eventsCount);
   console.log("orders:", data.orders?.length);
-  console.log("--- DEBUG (full) ---");
-  console.log(JSON.stringify(data.debug, null, 2));
+  if (data.orders?.length > 0) {
+    const o = data.orders[0];
+    console.log("--- PROCESSED ORDER ---");
+    const { raw, ...rest } = o;
+    console.log(JSON.stringify(rest, null, 2));
+    console.log("--- RAW ORDER (from iFood) ---");
+    console.log(JSON.stringify(raw, null, 2));
+  } else {
+    console.log("debug:", JSON.stringify(data.debug, null, 2));
+  }
 }
 main().catch(console.error);
