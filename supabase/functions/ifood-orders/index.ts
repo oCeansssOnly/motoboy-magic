@@ -79,15 +79,19 @@ Deno.serve(async (req: Request) => {
 
     // Statuses we want to show in the restaurant queue
     const SHOW_STATUSES = ["ACCEPTED", "DISPATCHED", "READY_TO_PICKUP", "CONFIRMED"];
-    // Orders in these statuses are fully done — ack the event and discard, never show again
     const TERMINAL_STATUSES = new Set(["CONCLUDED", "CANCELLED", "CANCELLATION_REQUESTED", "CONSUMER_CANCELLED"]);
-    // Delivery modes for restaurant's own fleet
+    const CANCELLED_STATUSES = new Set(["CANCELLED", "CANCELLATION_REQUESTED", "CONSUMER_CANCELLED"]);
     const OWN_DELIVERY_MODES = ["DEFAULT", "RESTAURANT", "OWN", "PADRAO"];
 
     const orders: any[] = [];
+    const concludedOrders: any[] = []; // fully delivered outside our app
+    const cancelledOrderIds: string[] = []; // cancelled — remove without stats
     const debug: any[] = [];
     const eventIdsToAck: string[] = [];
     const processedOrderIds = new Set<string>();
+    let topLevelMerchantAddress: string | null = null;
+    let topLevelStoreLat: number | null = null;
+    let topLevelStoreLng: number | null = null;
 
     for (const ev of events) {
       const orderId = ev.orderId;
@@ -130,11 +134,33 @@ Deno.serve(async (req: Request) => {
         // Always log for debug
         debug.push({ evCode: ev.code || ev.fullCode, status, deliveryMode, orderType, orderId });
 
-        // Terminal orders (CONCLUDED, CANCELLED): ack and discard immediately.
-        // These are fully done on iFood — we must ack so iFood stops re-sending
-        // the event on every poll, which would eventually cause the order to reappear.
+        // Terminal orders — ack immediately
         if (TERMINAL_STATUSES.has(status)) {
           eventIdsToAck.push(ev.id);
+          processedOrderIds.add(orderId);
+
+          // Extract basic order info for frontend sync
+          const c = o.customer || o.CUSTOMER || {};
+          const d = o.delivery || o.DELIVERY || {};
+          const da = d.deliveryAddress || d.DELIVERYADDRESS || {};
+          const dc = da.coordinates || da.COORDINATES || {};
+          const t = o.total || o.TOTAL || {};
+          const addrStr = [da.streetName||"", da.streetNumber||"", da.neighborhood||"", da.city||""].filter(Boolean).join(", ");
+
+          if (CANCELLED_STATUSES.has(status)) {
+            cancelledOrderIds.push(orderId);
+          } else {
+            // CONCLUDED: return full summary so frontend can save to confirmed_orders
+            concludedOrders.push({
+              id: orderId,
+              displayId: o.displayId || o.DISPLAYID || orderId.slice(0, 8),
+              customerName: c.name || c.NAME || "Cliente",
+              address: addrStr || "Endereço não disponível",
+              lat: dc.latitude || dc.LATITUDE || 0,
+              lng: dc.longitude || dc.LONGITUDE || 0,
+              total: t.orderAmount || t.ORDERAMOUNT || 0,
+            });
+          }
           continue;
         }
 
@@ -177,6 +203,7 @@ Deno.serve(async (req: Request) => {
 
         const merchant = o.merchant || o.MERCHANT || {};
         const mAddr = merchant.address || merchant.ADDRESS || {};
+        const mCoords = merchant.address?.coordinates || {};
         const merchantAddress = [
           mAddr.streetName  || mAddr.STREETNAME  || "",
           mAddr.streetNumber || mAddr.STREETNUMBER || "",
@@ -184,6 +211,13 @@ Deno.serve(async (req: Request) => {
           mAddr.city || mAddr.CITY || "",
           mAddr.state || mAddr.STATE || "",
         ].filter(Boolean).join(", ");
+
+        // Capture merchant location once (same for all orders)
+        if (merchantAddress && !topLevelMerchantAddress) topLevelMerchantAddress = merchantAddress;
+        if (mCoords.latitude && !topLevelStoreLat) {
+          topLevelStoreLat = mCoords.latitude;
+          topLevelStoreLng = mCoords.longitude;
+        }
 
         orders.push({
           id, displayId, localizador,
@@ -198,11 +232,8 @@ Deno.serve(async (req: Request) => {
           status,
           createdAt: o.createdAt || o.CREATEDAT,
           deliveryCode: delivery.pickupCode || delivery.PICKUPCODE || "",
-          merchantAddress: merchantAddress || null,
           raw: o,
         });
-
-
       } catch (err) {
         console.error(`Error fetching order ${orderId}:`, err);
         eventIdsToAck.push(ev.id);
@@ -218,7 +249,16 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    return new Response(JSON.stringify({ orders, eventsCount: events.length, debug }), {
+    return new Response(JSON.stringify({
+      orders,
+      concludedOrders,
+      cancelledOrderIds,
+      merchantAddress: topLevelMerchantAddress,
+      storeLat: topLevelStoreLat,
+      storeLng: topLevelStoreLng,
+      eventsCount: events.length,
+      debug,
+    }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
 

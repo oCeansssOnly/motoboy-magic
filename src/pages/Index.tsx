@@ -27,10 +27,20 @@ import {
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 
-const POLL_INTERVAL = 30_000; // 30 seconds
+const POLL_INTERVAL = 30_000;
 const LS_ROUTES_KEY = "courier_routes_v1";
 const LS_STORE_KEY = "store_coords_v1";
 const LS_DISMISSED_KEY = "dismissed_order_ids_v1";
+const LS_ADDRESS_KEY = "store_address_v1";
+
+/** Haversine distance in km between two lat/lng points */
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
 
 function loadRoutesFromStorage(): CourierRoute[] {
   try {
@@ -75,7 +85,9 @@ const Index = () => {
   const dismissedIdsRef = useRef<Set<string>>(dismissedOrderIds);
 
   const [assigning, setAssigning] = useState(false);
-  const [storeAddress, setStoreAddress] = useState<string | null>(null);
+  const [storeAddress, setStoreAddress] = useState<string | null>(
+    () => localStorage.getItem(LS_ADDRESS_KEY) || null
+  );
 
   const [loading, setLoading] = useState(false);
   const [polling, setPolling] = useState(false);
@@ -201,14 +213,63 @@ const Index = () => {
       if (data?.needsAuth) { setNeedsAuth(true); return; }
       if (fnError) throw fnError;
       if (data?.orders && Array.isArray(data.orders)) {
-        // Capture store address from real iFood merchant data
-        if (data.merchantAddress) setStoreAddress(data.merchantAddress);
+        // Capture + persist store address from real iFood merchant data
+        if (data.merchantAddress) {
+          setStoreAddress(data.merchantAddress);
+          localStorage.setItem(LS_ADDRESS_KEY, data.merchantAddress);
+        }
+        // Use store coords from iFood if none set
+        if (data.storeLat && data.storeLng) {
+          setStoreLat(prev => prev === -23.55052 ? data.storeLat : prev);
+          setStoreLng(prev => prev === -46.633308 ? data.storeLng : prev);
+        }
         mergeOrders(data.orders);
         if (!silent && data.orders.length > 0) {
           toast.success(`${data.orders.length} pedido(s) processado(s)`);
         }
       } else if (data?.error) {
         if (!silent) { setError(data.error); toast.error("Erro ao buscar pedidos", { description: data.error }); }
+      }
+
+      // ── Sync concluded orders (finished outside our site) ──────────────────
+      if (Array.isArray(data?.concludedOrders) && data.concludedOrders.length > 0) {
+        const concluded = data.concludedOrders as { id: string; displayId: string; customerName: string; address: string; lat: number; lng: number; total: number }[];
+        setCourierRoutes(prev => {
+          const updated = prev.map(route => {
+            const toFinalize = route.orders.filter(o => concluded.some(c => c.id === o.id));
+            if (toFinalize.length === 0) return route;
+            // Save each concluded order to DB
+            toFinalize.forEach(async order => {
+              const cInfo = concluded.find(c => c.id === order.id)!;
+              const distKm = haversineKm(storeLat, storeLng, cInfo.lat || order.lat, cInfo.lng || order.lng) * 2;
+              await supabase.from("confirmed_orders").insert({
+                ifood_order_id: order.id,
+                customer_name: order.customerName,
+                customer_address: order.address,
+                motoboy_name: route.name,
+                status: "concluded_by_ifood",
+                distance_km: Math.round(distKm * 10) / 10,
+                order_total_cents: order.total,
+                delivery_lat: cInfo.lat || order.lat,
+                delivery_lng: cInfo.lng || order.lng,
+              });
+            });
+            return { ...route, orders: route.orders.filter(o => !concluded.some(c => c.id === o.id)) };
+          }).filter(r => r.orders.length > 0);
+          return updated;
+        });
+        toast.info(`${data.concludedOrders.length} pedido(s) finalizado(s) pelo iFood e removido(s) das rotas.`, { duration: 6000 });
+      }
+
+      // ── Remove cancelled orders from routes ─────────────────────────────────
+      if (Array.isArray(data?.cancelledOrderIds) && data.cancelledOrderIds.length > 0) {
+        const cancelled = new Set<string>(data.cancelledOrderIds);
+        setCourierRoutes(prev =>
+          prev.map(r => ({ ...r, orders: r.orders.filter(o => !cancelled.has(o.id)) }))
+            .filter(r => r.orders.length > 0)
+        );
+        setOrders(prev => prev.filter(o => !cancelled.has(o.id)));
+        toast.warning(`${data.cancelledOrderIds.length} pedido(s) cancelado(s) removido(s).`, { duration: 5000 });
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Erro desconhecido";

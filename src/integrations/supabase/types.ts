@@ -26,6 +26,11 @@ export type Database = {
           motoboy_name: string | null
           order_code: string | null
           status: string
+          distance_km: number | null
+          order_total_cents: number | null
+          driver_id: string | null
+          delivery_lat: number | null
+          delivery_lng: number | null
         }
         Insert: {
           confirmation_code?: string | null
@@ -38,6 +43,11 @@ export type Database = {
           motoboy_name?: string | null
           order_code?: string | null
           status?: string
+          distance_km?: number | null
+          order_total_cents?: number | null
+          driver_id?: string | null
+          delivery_lat?: number | null
+          delivery_lng?: number | null
         }
         Update: {
           confirmation_code?: string | null
@@ -50,6 +60,11 @@ export type Database = {
           motoboy_name?: string | null
           order_code?: string | null
           status?: string
+          distance_km?: number | null
+          order_total_cents?: number | null
+          driver_id?: string | null
+          delivery_lat?: number | null
+          delivery_lng?: number | null
         }
         Relationships: []
       }

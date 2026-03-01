@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { LogOut, LayoutDashboard, Package, Bike, ChevronDown, Shield } from "lucide-react";
+import { LogOut, LayoutDashboard, Package, Bike, ChevronDown, Shield, User, TrendingUp } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
 function getMonthStart() {
@@ -103,7 +103,20 @@ export function ProfileMenu({ driverStats }: ProfileMenuProps) {
             </div>
           )}
 
-          {/* Driver stats */}
+          {/* Driver actions */}
+          {isDriver && (
+            <div className="p-2 border-b border-border">
+              <button
+                onClick={() => { setOpen(false); navigate("/perfil"); }}
+                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-foreground hover:bg-secondary transition-all text-left"
+              >
+                <TrendingUp size={15} className="text-primary flex-shrink-0" />
+                Ver meu Perfil &amp; Métricas
+              </button>
+            </div>
+          )}
+
+          {/* Driver stats summary (quick glance) */}
           {isDriver && driverStats !== undefined && (
             <div className="p-3 border-b border-border">
               <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-2 px-1">Minhas Entregas</p>
