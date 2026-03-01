@@ -10,10 +10,10 @@ import { HoldTransferModal } from "@/components/HoldTransferModal";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTransferRequests } from "@/hooks/useTransferRequests";
 import { useDriverLocation } from "@/hooks/useDriverLocation";
-import { IFoodOrder, CourierRoute, optimizeRoute, generateGoogleMapsUrl } from "@/lib/types";
+import { IFoodOrder, CourierRoute, NoContactOrder, optimizeRoute, generateGoogleMapsUrl } from "@/lib/types";
 import {
   Navigation, RefreshCw, Route, MapPin, Copy, Check, Loader2, Package,
-  AlertCircle, Bike, Radio, Store, Edit2, Check as CheckIcon, X,
+  AlertCircle, Bike, Radio, Store, Edit2, Check as CheckIcon, X, UserX, RotateCcw,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -76,7 +76,8 @@ const Index = () => {
   const dismissedIdsRef = useRef<Set<string>>(dismissedOrderIds);
 
   const [assigning, setAssigning] = useState(false);
-  const [cancellingRouteId, setCancellingRouteId] = useState<string | null>(null);
+  // No contact orders — fed from Supabase (shared across all clients)
+  const [noContactOrders, setNoContactOrders] = useState<NoContactOrder[]>([]);
   const [storeAddress, setStoreAddress] = useState<string | null>(
     () => localStorage.getItem(LS_ADDRESS_KEY) || null
   );
@@ -99,6 +100,11 @@ const Index = () => {
     try { return JSON.parse(localStorage.getItem(LS_STORE_KEY) || "null")?.lng ?? -46.633308; } catch { return -46.633308; }
   });
 
+  // ── Auto-close helper: remove routes that have no unconfirmed orders left ──
+  const cleanupEmptyRoutes = useCallback((prev: CourierRoute[]): CourierRoute[] =>
+    prev.filter(r => r.orders.some(o => !o.confirmed))
+  , []);
+
   // ── Transfer request (approved: add order to my route) ─────────────────────
   // Use a ref so handleOrderApproved always reads the current driver even if
   // the callback was captured when driver was still null (stale closure fix).
@@ -110,15 +116,17 @@ const Index = () => {
     if (!currentDriver) return;
     setCourierRoutes(prev => {
       const destIdx = prev.findIndex(r => r.name.toLowerCase() === currentDriver.name.toLowerCase());
+      let updated: CourierRoute[];
       if (destIdx >= 0) {
-        const updated = [...prev];
+        updated = [...prev];
         updated[destIdx] = { ...updated[destIdx], startLat: gpsLat, startLng: gpsLng, orders: [...updated[destIdx].orders, order] };
-        return updated;
+      } else {
+        const newRoute: CourierRoute = { id: crypto.randomUUID(), name: currentDriver.name, orders: [order], startLat: gpsLat, startLng: gpsLng, createdAt: new Date().toISOString() };
+        updated = [...prev, newRoute];
       }
-      const newRoute: CourierRoute = { id: crypto.randomUUID(), name: currentDriver.name, orders: [order], startLat: gpsLat, startLng: gpsLng, createdAt: new Date().toISOString() };
-      return [...prev, newRoute];
+      return cleanupEmptyRoutes(updated);
     });
-    // Switch to the driver's own route tab so the order is immediately visible
+    // Switch to the driver's own route tab
     setTimeout(() => {
       setCourierRoutes(prev => {
         const ownRoute = prev.find(r => r.name.toLowerCase() === currentDriver.name.toLowerCase());
@@ -127,7 +135,7 @@ const Index = () => {
       });
     }, 100);
     toast.success("Pedido transferido com sucesso! Confira sua rota.");
-  }, []); // deps intentionally empty — reads driverRef.current to avoid stale closure
+  }, [cleanupEmptyRoutes]); // reads driverRef.current to avoid stale closure
 
   const { incomingRequest, outgoingPending, requestTransfer, triggerPoll, approveIncoming, rejectIncoming } = useTransferRequests({
     myName: isDriver ? (driver?.name ?? null) : null,
@@ -360,6 +368,29 @@ const Index = () => {
     }
   }, [mergeOrders]);
 
+  // ── Load no_contact_orders from Supabase (initial + Realtime) ──────────────
+  useEffect(() => {
+    if (needsAuth || checkingAuth) return;
+    // Initial load
+    (supabase as any).from("no_contact_orders").select("*").order("marked_at", { ascending: false })
+      .then(({ data }: { data: NoContactOrder[] | null }) => { if (data) setNoContactOrders(data); });
+
+    // Realtime subscription for live updates across all clients
+    const channel = supabase
+      .channel("no-contact-realtime")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "no_contact_orders" }, payload => {
+        const nc = payload.new as unknown as NoContactOrder;
+        setNoContactOrders(prev => [nc, ...prev.filter(x => x.order_id !== nc.order_id)]);
+      })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "no_contact_orders" }, payload => {
+        const id = (payload.old as any).id;
+        setNoContactOrders(prev => prev.filter(x => x.id !== id));
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [needsAuth, checkingAuth]);
+
   // Initial load + polling (single effect — do NOT duplicate)
   useEffect(() => {
     if (needsAuth || checkingAuth) return;
@@ -485,49 +516,83 @@ const Index = () => {
     const activeOrderIds = routeToClose.orders
       .filter((o) => !o.confirmed)
       .map((o) => o.id);
-
-    // Trigger iFood cancellation if there are active orders
-    if (activeOrderIds.length > 0) {
-      setCancellingRouteId(routeId);
-      try {
-        const { data, error } = await supabase.functions.invoke("ifood-cancel", {
-          body: { orderIds: activeOrderIds },
-        });
-        if (error) throw error;
-        const cancelled = data?.cancelled ?? [];
-        const failed = data?.failed ?? [];
-        if (cancelled.length > 0) {
-          toast.success(`${cancelled.length} pedido(s) cancelado(s) no iFood.`);
-        }
-        if (failed.length > 0) {
-          toast.warning(`${failed.length} pedido(s) não foram cancelados no iFood.`);
-        }
-        if (!data?.success && data?.error) {
-          toast.error(`Erro ao cancelar no iFood: ${data.error}`);
-        }
-      } catch (e: any) {
-        toast.warning(`Não foi possível cancelar os pedidos no iFood: ${e?.message ?? "erro desconhecido"}.`);
-      } finally {
-        setCancellingRouteId(null);
+  // ── No-Contact handler ─────────────────────────────────────────────────────
+  // Called when a driver or admin marks an order as "No Contact".
+  // Removes order from the driver's route (auto-closes route if now empty),
+  // and inserts into no_contact_orders so any driver can retry.
+  const handleNoContact = async (routeId: string, order: IFoodOrder) => {
+    const callerName = isDriver ? (driver?.name ?? "Admin") : "Admin";
+    // Find existing row to increment attempt count
+    const { data: existing } = await (supabase as any)
+      .from("no_contact_orders")
+      .select("id, attempt_count")
+      .eq("order_id", order.id)
+      .limit(1);
+    if (existing && existing.length > 0) {
+      // Update existing: increment attempt count
+      await (supabase as any)
+        .from("no_contact_orders")
+        .update({ attempt_count: (existing[0].attempt_count ?? 1) + 1, marked_by: callerName, marked_at: new Date().toISOString(), order_data: order as any })
+        .eq("id", existing[0].id);
+    } else {
+      await (supabase as any).from("no_contact_orders").insert({
+        order_id: order.id,
+        order_data: order as any,
+        marked_by: callerName,
+        attempt_count: 1,
+      });
+    }
+    // Remove order from route; auto-close route if now empty
+    setCourierRoutes(prev => {
+      const next = prev.map(r =>
+        r.id === routeId
+          ? { ...r, orders: r.orders.filter(o => o.id !== order.id) }
+          : r
+      );
+      const cleaned = cleanupEmptyRoutes(next);
+      if (!cleaned.find(r => r.id === routeId)) {
+        // Route was closed — go back to queue
+        setTimeout(() => setActiveTab("queue"), 0);
       }
-    }
-
-    // Only un-dismiss UNCONFIRMED orders when closing a route.
-    // Confirmed/delivered orders must stay dismissed so late iFood events
-    // (e.g. a delayed CONCLUDED event) never bring them back into the queue.
-    const toUndismiss = activeOrderIds;
-    if (toUndismiss.length > 0) {
-      const nextDismissed = new Set(dismissedIdsRef.current);
-      toUndismiss.forEach((id) => nextDismissed.delete(id));
-      dismissedIdsRef.current = nextDismissed;
-      setDismissedOrderIds(nextDismissed);
-      saveDismissedIds(nextDismissed);
-    }
-
-    setCourierRoutes((prev) => prev.filter((r) => r.id !== routeId));
-    setActiveTab("queue");
-    toast.info("Rota encerrada.");
+      return cleaned;
+    });
+    toast.info(`Pedido #${order.displayId} movido para Retentativas.`);
   };
+
+  // ── Claim a no-contact order for a retry ───────────────────────────────────
+  const handleClaimNoContact = async (nc: NoContactOrder) => {
+    const currentDriver = driverRef.current;
+    if (!currentDriver && !isAdmin) return;
+    const driverName = currentDriver?.name ?? "Admin";
+
+    // Delete from no_contact_orders (Realtime will update other clients)
+    await (supabase as any).from("no_contact_orders").delete().eq("id", nc.id);
+
+    // Add order to the claiming driver's route
+    const orderToAdd = { ...nc.order_data, confirmed: false };
+    setCourierRoutes(prev => {
+      const destIdx = prev.findIndex(r => r.name.toLowerCase() === driverName.toLowerCase());
+      if (destIdx >= 0) {
+        const updated = [...prev];
+        updated[destIdx] = { ...updated[destIdx], orders: [...updated[destIdx].orders, orderToAdd] };
+        return updated;
+      }
+      const newRoute: CourierRoute = { id: crypto.randomUUID(), name: driverName, orders: [orderToAdd], startLat: storeLat, startLng: storeLng, createdAt: new Date().toISOString() };
+      return [...prev, newRoute];
+    });
+    setNoContactOrders(prev => prev.filter(x => x.id !== nc.id));
+    toast.success(`Pedido #${nc.order_data.displayId} adicionado à sua rota!`);
+    // Switch to claiming driver's tab
+    setTimeout(() => {
+      setCourierRoutes(prev => {
+        const ownRoute = prev.find(r => r.name.toLowerCase() === driverName.toLowerCase());
+        if (ownRoute) setActiveTab(ownRoute.id);
+        return prev;
+      });
+    }, 100);
+  };
+
+  // ── handleCloseCourierRoute removed — routes now close automatically ──────
 
   const handleOrderConfirmed = (routeId: string, orderId: string, code: string) => {
     setCourierRoutes((prev) => {
@@ -552,13 +617,13 @@ const Index = () => {
           delivery_lat: order.lat || storeLat,
           delivery_lng: order.lng || storeLng,
         }).then(() => {});
-        // Mark order as completed in pending_orders table
         supabase.from("pending_orders")
           .update({ status: "COMPLETED" })
           .eq("id", order.id)
           .then(() => {});
       }
-      return updated;
+      // Auto-close route if all orders are now confirmed
+      return cleanupEmptyRoutes(updated);
     });
   };
 
@@ -694,7 +759,7 @@ const Index = () => {
         </div>
 
         {/* Tabs */}
-        {!needsAuth && !checkingAuth && courierRoutes.length > 0 && (
+        {!needsAuth && !checkingAuth && (courierRoutes.length > 0 || noContactOrders.length > 0) && (
           <div className="container pb-0 overflow-x-auto">
             <div className="flex gap-1 min-w-max">
               <button
@@ -709,7 +774,7 @@ const Index = () => {
                 )}
               </button>
               {courierRoutes
-                .filter((r) => r.orders.some((o) => !o.confirmed)) // only show routes with active orders
+                .filter((r) => r.orders.some((o) => !o.confirmed))
                 .map((r) => {
                 const active = r.orders.filter((o) => !o.confirmed).length;
                 return (
@@ -723,6 +788,16 @@ const Index = () => {
                   </button>
                 );
               })}
+              {/* Retentativas tab */}
+              {noContactOrders.length > 0 && (
+                <button
+                  onClick={() => setActiveTab("retentativas")}
+                  className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 transition-all whitespace-nowrap ${activeTab === "retentativas" ? "border-orange-500 text-orange-400" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+                >
+                  <UserX size={11} /> Retentativas
+                  <span className="px-1.5 py-0.5 rounded-full bg-orange-500 text-white text-[10px]">{noContactOrders.length}</span>
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -742,7 +817,7 @@ const Index = () => {
         )}
 
         {/* ── Courier tab view ── */}
-        {!needsAuth && !checkingAuth && activeTab !== "queue" && activeRouteData && (
+        {!needsAuth && !checkingAuth && activeTab !== "queue" && activeTab !== "retentativas" && activeRouteData && (
           <CourierTab
             route={activeRouteData}
             storeLat={storeLat}
@@ -750,12 +825,62 @@ const Index = () => {
             currentDriverName={isDriver ? driver?.name ?? null : null}
             isAdmin={isAdmin}
             outgoingPending={outgoingPending}
-            onEndRoute={() => handleCloseCourierRoute(activeRouteData.id)}
-            cancelling={cancellingRouteId === activeRouteData.id}
             onOrderConfirmed={handleOrderConfirmed}
+            onNoContact={(routeId, order) => handleNoContact(routeId, order)}
             onRequestTransfer={(order, ownerName) => { requestTransfer(order, ownerName); triggerPoll(); }}
             onAdminReassign={(fromRouteId, orderId, toDriver) => handleAdminReassign(fromRouteId, orderId, toDriver)}
           />
+        )}
+
+        {/* ── Retentativas (No-Contact) section ── */}
+        {!needsAuth && !checkingAuth && activeTab === "retentativas" && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <UserX size={18} className="text-orange-400" />
+              <h2 className="font-semibold text-foreground">Retentativas de Entrega</h2>
+              <span className="ml-auto text-xs text-muted-foreground">{noContactOrders.length} pedido(s)
+              </span>
+            </div>
+            {noContactOrders.length === 0 ? (
+              <div className="text-center py-10 text-muted-foreground text-sm">Nenhuma retentativa no momento.</div>
+            ) : (
+              <div className="space-y-3">
+                {noContactOrders.map(nc => (
+                  <div key={nc.id} className="glass-card rounded-xl p-4 space-y-3 border-l-4 border-l-orange-500/60">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground">#{nc.order_data.displayId}</span>
+                          {nc.attempt_count > 1 && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400 border border-orange-500/30">
+                              {nc.attempt_count}ª tentativa
+                            </span>
+                          )}
+                        </div>
+                        <p className="font-semibold text-foreground mt-1">{nc.order_data.customerName}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">{nc.order_data.address}</p>
+                      </div>
+                      <span className="text-sm font-semibold text-foreground whitespace-nowrap">
+                        R$ {(nc.order_data.total / 100).toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span className="flex items-center gap-1"><UserX size={11} className="text-orange-400" /> Marcado por {nc.marked_by}</span>
+                      {nc.order_data.customerPhone && (
+                        <a href={`tel:${nc.order_data.customerPhone}`} className="text-primary hover:underline">{nc.order_data.customerPhone}</a>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => handleClaimNoContact(nc)}
+                      className="w-full py-2.5 rounded-lg bg-orange-500/15 border border-orange-500/30 text-sm text-orange-400 font-medium hover:bg-orange-500/25 hover:border-orange-500/50 transition-all flex items-center justify-center gap-2"
+                    >
+                      <RotateCcw size={14} /> Tentar novamente
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
 
         {/* ── Main queue view ── */}

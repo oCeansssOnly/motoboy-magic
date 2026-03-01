@@ -21,6 +21,16 @@ export interface IFoodOrder {
   confirmedLocally?: boolean;
 }
 
+export interface NoContactOrder {
+  id: string;           // UUID PK in no_contact_orders
+  order_id: string;     // iFood order ID
+  order_data: IFoodOrder;
+  marked_by: string;
+  attempt_count: number;
+  marked_at: string;
+}
+
+
 export interface CourierRoute {
   id: string;
   name: string;

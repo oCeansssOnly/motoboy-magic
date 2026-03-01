@@ -1,12 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { IFoodOrder, CourierRoute, optimizeRoute, generateGoogleMapsUrl, getPaymentLabel } from "@/lib/types";
 import {
   Navigation, MapPin, Phone, Package, Check, Loader2, ChevronDown, ChevronUp,
-  Clock, ShoppingBag, Copy, X, Bike, ArrowRightLeft, RefreshCw,
+  Clock, ShoppingBag, Copy, Bike, ArrowRightLeft, RefreshCw, UserX,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { EndRouteModal } from "@/components/EndRouteModal";
 
 interface CourierTabProps {
   route: CourierRoute;
@@ -17,11 +16,9 @@ interface CourierTabProps {
   isAdmin: boolean;
   /** Order IDs that this driver has already sent a transfer request for */
   outgoingPending: Set<string>;
-  /** Called after admin holds-to-confirm end route */
-  onEndRoute: () => void;
-  /** True while the admin-triggered iFood cancellation is in progress */
-  cancelling?: boolean;
   onOrderConfirmed: (routeId: string, orderId: string, code: string) => void;
+  /** Driver (or admin) marks order as no-contact — move to Retentativas */
+  onNoContact: (routeId: string, order: IFoodOrder) => void;
   /** Driver requests a transfer — only for non-owners */
   onRequestTransfer: (order: IFoodOrder, ownerName: string) => void;
   /** Admin directly reassigns an order to another driver */
@@ -30,11 +27,10 @@ interface CourierTabProps {
 
 export function CourierTab({
   route, storeLat, storeLng, currentDriverName, isAdmin,
-  outgoingPending, onEndRoute, cancelling, onOrderConfirmed, onRequestTransfer, onAdminReassign,
+  outgoingPending, onOrderConfirmed, onNoContact, onRequestTransfer, onAdminReassign,
 }: CourierTabProps) {
   const [completedOpen, setCompletedOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [showEndModal, setShowEndModal] = useState(false);
 
   const activeOrders = route.orders.filter(o => !o.confirmed);
   const completedOrders = route.orders.filter(o => o.confirmed);
@@ -71,17 +67,6 @@ export function CourierTab({
               </p>
             </div>
           </div>
-          {/* Admin-only: End Route button (opens confirmation modal) */}
-          {isAdmin && (
-            <button
-              onClick={() => setShowEndModal(true)}
-              title="Encerrar rota"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-destructive border border-destructive/30 hover:bg-destructive/10 transition-all"
-            >
-              <X size={13} />
-              Encerrar
-            </button>
-          )}
         </div>
 
         {/* Route actions */}
@@ -122,6 +107,7 @@ export function CourierTab({
               ownerName={route.name}
               isPendingTransfer={outgoingPending.has(order.id)}
               onConfirmed={onOrderConfirmed}
+              onNoContact={() => onNoContact(route.id, order)}
               onRequestTransfer={() => onRequestTransfer(order, route.name)}
               onAdminReassign={(toDriver) => onAdminReassign(route.id, order.id, toDriver)}
             />
@@ -142,6 +128,7 @@ export function CourierTab({
                     isOwnRoute={isOwnRoute} isAdmin={isAdmin} ownerName={route.name}
                     isPendingTransfer={false}
                     onConfirmed={onOrderConfirmed}
+                    onNoContact={() => {}}
                     onRequestTransfer={() => {}}
                     onAdminReassign={() => {}}
                   />
@@ -151,19 +138,6 @@ export function CourierTab({
           </div>
         )}
       </div>
-
-      {/* Admin End Route confirmation modal */}
-      {showEndModal && (
-        <EndRouteModal
-          route={route}
-          cancelling={cancelling}
-          onCancel={() => setShowEndModal(false)}
-          onConfirm={() => {
-            setShowEndModal(false);
-            onEndRoute();
-          }}
-        />
-      )}
     </>
   );
 }
@@ -178,19 +152,21 @@ interface DeliveryCardProps {
   ownerName: string;
   isPendingTransfer: boolean;
   onConfirmed: (routeId: string, orderId: string, code: string) => void;
+  onNoContact: () => void;
   onRequestTransfer: () => void;
   onAdminReassign: (toDriver: string) => void;
 }
 
 function DeliveryCard({
   order, index, routeId, isOwnRoute, isAdmin, ownerName,
-  isPendingTransfer, onConfirmed, onRequestTransfer, onAdminReassign,
+  isPendingTransfer, onConfirmed, onNoContact, onRequestTransfer, onAdminReassign,
 }: DeliveryCardProps) {
   const [confirmCode, setConfirmCode] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [showReassign, setShowReassign] = useState(false);
   const [activeDrivers, setActiveDrivers] = useState<string[]>([]);
   const [loadingDrivers, setLoadingDrivers] = useState(false);
+  const [markingNoContact, setMarkingNoContact] = useState(false);
 
   const timeAgo = order.createdAt ? getTimeAgo(order.createdAt) : "";
 
@@ -212,6 +188,15 @@ function DeliveryCard({
       onConfirmed(routeId, order.id, confirmCode.trim());
     } catch { toast.error("Erro ao confirmar. Tente novamente."); }
     finally { setConfirming(false); }
+  };
+
+  const handleNoContact = async () => {
+    setMarkingNoContact(true);
+    try {
+      onNoContact();
+    } finally {
+      setMarkingNoContact(false);
+    }
   };
 
   const openReassignDropdown = async () => {
@@ -266,6 +251,20 @@ function DeliveryCard({
           </a>
         )}
       </div>
+
+      {/* ── "Não encontrei o cliente" — own driver OR admin, only on active orders ── */}
+      {(isOwnRoute || isAdmin) && !order.confirmed && (
+        <div className="pt-2 border-t border-border">
+          <button
+            onClick={handleNoContact}
+            disabled={markingNoContact}
+            className="w-full py-2 rounded-lg bg-orange-500/10 border border-orange-500/25 text-sm text-orange-400 hover:bg-orange-500/20 hover:border-orange-500/40 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            {markingNoContact ? <Loader2 size={14} className="animate-spin" /> : <UserX size={14} />}
+            {markingNoContact ? "Movendo..." : "Não encontrei o cliente"}
+          </button>
+        </div>
+      )}
 
       {/* ── Admin: Reassign button ── */}
       {isAdmin && !order.confirmed && (
