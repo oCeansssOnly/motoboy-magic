@@ -118,9 +118,14 @@ Deno.serve(async (req: Request) => {
     let verifyData: any = null;
     try { verifyData = verifyBody ? JSON.parse(verifyBody) : null; } catch { /* ignore */ }
 
-    // iFood returns { success: true } if the code matches, { success: false } otherwise.
-    // A non-2xx status (e.g. 400, 404) also means failure.
-    const codeValid = verifyRes.ok && verifyData?.success === true;
+    console.log("verifyDeliveryCode →", verifyRes.status, verifyBody);
+
+    // Treat as valid if:
+    //   - HTTP status is 2xx (ok), AND
+    //   - response does NOT explicitly say success: false
+    // This handles cases where iFood returns 200 with empty body, {}, or { success: true }.
+    const explicitlyFailed = verifyData?.success === false;
+    const codeValid = verifyRes.ok && !explicitlyFailed;
 
     if (!codeValid) {
       // Code is wrong — do NOT record anything, return failure to the client

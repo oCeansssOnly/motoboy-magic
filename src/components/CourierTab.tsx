@@ -253,7 +253,7 @@ function DeliveryCard({ order, index, routeId, onConfirmed }: DeliveryCardProps)
           </label>
           <div className="flex gap-2">
             <input
-              type="password"
+              type="text"
               inputMode="numeric"
               value={confirmCode}
               onChange={(e) => setConfirmCode(e.target.value)}
