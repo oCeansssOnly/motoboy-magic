@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.ifood-confirm]
 verify_jwt = false
+
+[functions.ifood-auth]
+verify_jwt = false
