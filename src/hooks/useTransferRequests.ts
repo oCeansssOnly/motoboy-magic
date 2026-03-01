@@ -39,16 +39,12 @@ export function useTransferRequests({
 }: UseTransferRequestsOptions) {
   const [incomingRequest, setIncomingRequest] = useState<TransferRequest | null>(null);
   const [outgoingPending, setOutgoingPending] = useState<Set<string>>(new Set());
-  // Notifications saved while offline — shown as persistent badge on mount
   const [pendingNotifications, setPendingNotifications] = useState<TransferRequest[]>([]);
   const handledRef = useRef<Set<string>>(new Set()); // prevent duplicate popups
 
-  // Keep a ref to onOrderApproved so Realtime/polling callbacks always call
-  // the latest version without needing to re-subscribe the channel.
+  // Keep refs for callbacks/coords so Realtime/polling always use the latest values.
   const onOrderApprovedRef = useRef(onOrderApproved);
   useEffect(() => { onOrderApprovedRef.current = onOrderApproved; }, [onOrderApproved]);
-
-  // Also keep refs for storeLat/storeLng used inside the async channel callback.
   const storeLatRef = useRef(storeLat);
   const storeLngRef = useRef(storeLng);
   useEffect(() => { storeLatRef.current = storeLat; storeLngRef.current = storeLng; }, [storeLat, storeLng]);
@@ -56,7 +52,48 @@ export function useTransferRequests({
   // Request browser notification permission on mount
   useEffect(() => { requestNotificationPermission(); }, []);
 
-  // ── On mount: load pending requests saved while driver was offline ──────────
+  // ── Dedupe guard: track row IDs already applied ───────────────────────────
+  const appliedRef = useRef<Set<string>>(new Set());
+
+  // ── Core: apply an approved transfer immediately using provided row data ──
+  // Called from both Realtime (with full payload) and polling (with DB row).
+  // Since transfer_requests has REPLICA IDENTITY FULL and is in the publication,
+  // the Realtime UPDATE payload always includes complete order_data — no extra fetch needed.
+  const applyApproval = useCallback(async (row: TransferRequest) => {
+    if (appliedRef.current.has(row.id)) return;
+    appliedRef.current.add(row.id);
+
+    // Get current GPS position for the new driver's route start
+    let lat = storeLatRef.current, lng = storeLngRef.current;
+    try {
+      const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
+        navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 3000 })
+      );
+      lat = pos.coords.latitude; lng = pos.coords.longitude;
+    } catch { /* store fallback */ }
+
+    onOrderApprovedRef.current({ ...row.order_data, confirmed: false }, lat, lng);
+    setOutgoingPending(prev => { const n = new Set(prev); n.delete(row.order_id); return n; });
+
+    // Mark as completed in DB (fire-and-forget — don't await to avoid blocking)
+    supabase.from("transfer_requests").update({ status: "completed" }).eq("id", row.id).then(() => {});
+    sendBrowserNotification("✅ Transferência aprovada!", `Pedido #${row.order_data?.displayId} está na sua rota.`, `approved-${row.id}`);
+  }, []); // reads only refs
+
+  // ── Fallback: if Realtime is unavailable, fetch full row then apply ────────
+  const fetchAndApply = useCallback(async (rowId: string) => {
+    if (appliedRef.current.has(rowId)) return;
+    const { data: rows } = await supabase
+      .from("transfer_requests")
+      .select("*")
+      .eq("id", rowId)
+      .eq("status", "approved")
+      .limit(1);
+    const row = (rows?.[0] as unknown) as TransferRequest | undefined;
+    if (row) await applyApproval(row);
+  }, [applyApproval]);
+
+  // ── On mount: load pending requests saved while driver was offline ─────────
   useEffect(() => {
     if (!myName) return;
     (async () => {
@@ -68,15 +105,9 @@ export function useTransferRequests({
         .order("created_at", { ascending: true });
 
       if (!data || data.length === 0) return;
-
-      // Mark all as handled so Realtime doesn't double-fire
       data.forEach(r => handledRef.current.add(r.id));
       setPendingNotifications(data as unknown as TransferRequest[]);
-
-      // Show the first one immediately as a popup
       setIncomingRequest(data[0] as unknown as TransferRequest);
-
-      // Browser notification for each one missed
       data.forEach(r => {
         sendBrowserNotification(
           "🛵 Solicitação de Transferência (pendente)",
@@ -86,54 +117,13 @@ export function useTransferRequests({
       });
     })();
 
-    // Also load outgoing pending orders for this driver
+    // Also restore outgoing pending badge
     supabase.from("transfer_requests")
       .select("order_id").eq("requester_name", myName).eq("status", "pending")
       .then(({ data }) => {
         if (data?.length) setOutgoingPending(new Set(data.map(r => r.order_id)));
       });
   }, [myName]);
-
-  // ─── Shared helper: fetch the latest approved row from DB and apply it ──────
-  // Always fetches fresh from DB instead of trusting payload.new.order_data,
-  // because Supabase Realtime UPDATE events may not include JSONB columns
-  // unless the table has REPLICA IDENTITY FULL (race condition / config risk).
-  const appliedRef = useRef<Set<string>>(new Set());
-
-  const fetchAndApplyApproval = useCallback(async (rowId: string) => {
-    if (appliedRef.current.has(rowId)) return; // already handled
-    appliedRef.current.add(rowId);
-
-    // Fetch the full row to guarantee order_data is complete
-    const { data: rows } = await supabase
-      .from("transfer_requests")
-      .select("*")
-      .eq("id", rowId)
-      .eq("status", "approved")
-      .limit(1);
-
-    const row = (rows?.[0] as unknown) as TransferRequest | undefined;
-    if (!row) {
-      // Row no longer 'approved' (already completed or missing) — remove from applied set so
-      // it can be retried if needed, but don't double-fire
-      appliedRef.current.delete(rowId);
-      return;
-    }
-
-    let lat = storeLatRef.current, lng = storeLngRef.current;
-    try {
-      const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
-        navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 })
-      );
-      lat = pos.coords.latitude; lng = pos.coords.longitude;
-    } catch { /* store fallback */ }
-
-    onOrderApprovedRef.current({ ...row.order_data, confirmed: false }, lat, lng);
-    setOutgoingPending(prev => { const n = new Set(prev); n.delete(row.order_id); return n; });
-    // Mark as completed so it won't be re-processed
-    await supabase.from("transfer_requests").update({ status: "completed" }).eq("id", row.id);
-    sendBrowserNotification("✅ Transferência aprovada!", `Pedido #${row.order_data?.displayId} está na sua rota.`, `approved-${row.id}`);
-  }, []); // reads only refs
 
   // ── Realtime subscription ──────────────────────────────────────────────────
   useEffect(() => {
@@ -147,10 +137,10 @@ export function useTransferRequests({
         const req = payload.new as TransferRequest;
         if (req.current_owner_name.toLowerCase() !== myName.toLowerCase()) return;
         if (req.status !== "pending") return;
-        if (handledRef.current.has(req.id)) return; // already shown from mount query
+        if (handledRef.current.has(req.id)) return;
         handledRef.current.add(req.id);
 
-        setIncomingRequest(prev => prev ?? req); // don't replace if already showing one
+        setIncomingRequest(prev => prev ?? req);
         setPendingNotifications(prev => [...prev, req]);
         sendBrowserNotification(
           "🛵 Solicitação de Transferência",
@@ -166,11 +156,16 @@ export function useTransferRequests({
         event: "UPDATE", schema: "public", table: "transfer_requests",
       }, async (payload) => {
         const req = payload.new as TransferRequest;
-        // Only the requester cares about their own outgoing requests being resolved
         if (req.requester_name.toLowerCase() !== myName.toLowerCase()) return;
+
         if (req.status === "approved") {
-          // Do NOT trust payload.new.order_data — always re-fetch the full row
-          await fetchAndApplyApproval(req.id);
+          // REPLICA IDENTITY FULL guarantees order_data is in the payload — apply instantly
+          if (req.order_data && Object.keys(req.order_data).length > 0) {
+            await applyApproval(req);
+          } else {
+            // Safety fallback: fetch from DB (shouldn't happen with REPLICA IDENTITY FULL)
+            await fetchAndApply(req.id);
+          }
         } else if (req.status === "rejected") {
           setOutgoingPending(prev => { const n = new Set(prev); n.delete(req.order_id); return n; });
           sendBrowserNotification("❌ Transferência recusada", `${req.current_owner_name} recusou o pedido #${req.order_data?.displayId}.`, `rejected-${req.id}`);
@@ -179,10 +174,10 @@ export function useTransferRequests({
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [myName, fetchAndApplyApproval]); // fetchAndApplyApproval is stable (useCallback [])
+  }, [myName, applyApproval, fetchAndApply]);
 
-  // ── Polling fallback: catch approved requests missed by Realtime ───────────
-  // Runs every 3 s; also exposed as triggerPoll for instant checks.
+  // ── Polling fallback ─────────────────────────────────────────────────────
+  // Catches approvals missed while Realtime was disconnected.
   const pollRef = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => {
@@ -191,22 +186,21 @@ export function useTransferRequests({
     const pollFn = async () => {
       const { data } = await supabase
         .from("transfer_requests")
-        .select("id")
+        .select("*")                          // fetch full rows — same cost, avoids second trip
         .eq("requester_name", myName)
         .eq("status", "approved");
 
       if (!data || data.length === 0) return;
-      // fetchAndApplyApproval is idempotent — safe to call for every approved row
-      await Promise.all(data.map(row => fetchAndApplyApproval(row.id)));
+      await Promise.all((data as unknown as TransferRequest[]).map(row => applyApproval(row)));
     };
 
     pollRef.current = pollFn;
-    pollFn(); // run immediately on mount
-    const interval = setInterval(pollFn, 3_000); // 3s fallback
+    pollFn(); // immediate check on mount
+    const interval = setInterval(pollFn, 3_000);
     return () => clearInterval(interval);
-  }, [myName, fetchAndApplyApproval]);
+  }, [myName, applyApproval]);
 
-  /** Trigger an immediate poll — call right after requestTransfer for near-zero latency */
+  /** Trigger an immediate poll — call right after requestTransfer */
   const triggerPoll = useCallback(() => { void pollRef.current(); }, []);
 
   const requestTransfer = useCallback(async (order: IFoodOrder, currentOwnerName: string): Promise<boolean> => {
@@ -224,7 +218,6 @@ export function useTransferRequests({
   const approveIncoming = useCallback(async () => {
     if (!incomingRequest) return;
     await supabase.from("transfer_requests").update({ status: "approved" }).eq("id", incomingRequest.id);
-    // Move to next pending notification if any
     setPendingNotifications(prev => {
       const rest = prev.filter(r => r.id !== incomingRequest.id);
       setIncomingRequest(rest[0] ?? null);
