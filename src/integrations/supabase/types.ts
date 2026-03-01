@@ -14,7 +14,45 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      confirmed_orders: {
+        Row: {
+          confirmation_code: string | null
+          confirmed_at: string
+          created_at: string
+          customer_address: string | null
+          customer_name: string | null
+          id: string
+          ifood_order_id: string
+          motoboy_name: string | null
+          order_code: string | null
+          status: string
+        }
+        Insert: {
+          confirmation_code?: string | null
+          confirmed_at?: string
+          created_at?: string
+          customer_address?: string | null
+          customer_name?: string | null
+          id?: string
+          ifood_order_id: string
+          motoboy_name?: string | null
+          order_code?: string | null
+          status?: string
+        }
+        Update: {
+          confirmation_code?: string | null
+          confirmed_at?: string
+          created_at?: string
+          customer_address?: string | null
+          customer_name?: string | null
+          id?: string
+          ifood_order_id?: string
+          motoboy_name?: string | null
+          order_code?: string | null
+          status?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
