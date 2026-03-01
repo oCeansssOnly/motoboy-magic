@@ -9,11 +9,24 @@ const corsHeaders = {
 const IFOOD_API = 'https://merchant-api.ifood.com.br';
 const IFOOD_AUTH_URL = 'https://merchant-api.ifood.com.br/authentication/v1.0/oauth/token';
 
+/** Safely read a response body as text and parse as JSON.
+ *  Returns null if the body is empty or not valid JSON. */
+async function safeJson(res: Response): Promise<any> {
+  let text = '';
+  try {
+    text = await res.text();
+    if (!text || !text.trim()) return null;
+    return JSON.parse(text);
+  } catch {
+    console.error(`safeJson parse error (status ${res.status}): ${text.slice(0, 200)}`);
+    return null;
+  }
+}
+
 async function getAccessToken(supabase: any): Promise<string> {
   const clientId = Deno.env.get('IFOOD_CLIENT_ID')!;
   const clientSecret = Deno.env.get('IFOOD_CLIENT_SECRET')!;
 
-  // Get stored tokens
   const { data: tokens } = await supabase
     .from('ifood_tokens')
     .select('*')
@@ -43,14 +56,16 @@ async function getAccessToken(supabase: any): Promise<string> {
     }),
   });
 
-  if (!res.ok) {
-    const error = await res.text();
-    throw new Error(`Token refresh failed [${res.status}]: ${error}`);
+  const data = await safeJson(res);
+
+  if (!res.ok || !data) {
+    throw new Error(`Token refresh failed [${res.status}]: ${JSON.stringify(data)}`);
   }
 
-  const data = await res.json();
+  if (!data.accessToken) {
+    throw new Error(`NOT_AUTHENTICATED: Token de refresh expirado ou inválido. Reautentique o iFood.`);
+  }
 
-  // Update stored tokens
   await supabase.from('ifood_tokens').update({
     access_token: data.accessToken,
     refresh_token: data.refreshToken || token.refresh_token,
@@ -80,12 +95,13 @@ serve(async (req) => {
     });
 
     let events: any[] = [];
+
     if (eventsRes.status === 200) {
-      const text = await eventsRes.text();
-      if (text) {
-        events = JSON.parse(text);
+      const parsed = await safeJson(eventsRes);
+      if (Array.isArray(parsed)) {
+        events = parsed;
       }
-      
+
       // Acknowledge events
       if (events.length > 0) {
         await fetch(`${IFOOD_API}/events/v1.0/events/acknowledgment`, {
@@ -97,12 +113,12 @@ serve(async (req) => {
           body: JSON.stringify(events.map((e: any) => ({ id: e.id }))),
         });
       }
-    } else if (eventsRes.status === 204 || eventsRes.status === 202) {
-      // No events - normal
-      await eventsRes.text();
     } else {
-      const text = await eventsRes.text();
-      console.log(`Events polling: ${eventsRes.status}: ${text}`);
+      // 204 = no events (normal), anything else = log it
+      const body = await eventsRes.text();
+      if (eventsRes.status !== 204 && eventsRes.status !== 202) {
+        console.log(`Events polling: ${eventsRes.status}: ${body}`);
+      }
     }
 
     // 2. Get order IDs from events (PLACED, CONFIRMED, READY_TO_PICKUP)
@@ -118,11 +134,11 @@ serve(async (req) => {
         const orderRes = await fetch(`${IFOOD_API}/order/v1.0/orders/${orderId}`, {
           headers: { 'Authorization': `Bearer ${accessToken}` },
         });
-        
+
         if (orderRes.status === 200) {
-          const text = await orderRes.text();
-          if (!text) continue;
-          const order = JSON.parse(text);
+          const order = await safeJson(orderRes);
+          if (!order || !order.id) continue;
+
           orders.push({
             id: order.id,
             displayId: order.displayId || order.id.slice(0, 8),
@@ -139,7 +155,8 @@ serve(async (req) => {
             deliveryCode: order.delivery?.deliveryCode || '',
           });
         } else {
-          await orderRes.text();
+          const body = await orderRes.text();
+          console.log(`Order ${orderId} returned ${orderRes.status}: ${body}`);
         }
       } catch (err) {
         console.error(`Error fetching order ${orderId}:`, err);
@@ -153,8 +170,8 @@ serve(async (req) => {
     console.error('Error:', error);
     const message = error instanceof Error ? error.message : 'Unknown error';
     const isAuthError = message.includes('NOT_AUTHENTICATED');
-    return new Response(JSON.stringify({ 
-      error: message, 
+    return new Response(JSON.stringify({
+      error: message,
       orders: [],
       needsAuth: isAuthError,
     }), {
