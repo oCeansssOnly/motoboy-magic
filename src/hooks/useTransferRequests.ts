@@ -94,6 +94,47 @@ export function useTransferRequests({
       });
   }, [myName]);
 
+  // ─── Shared helper: fetch the latest approved row from DB and apply it ──────
+  // Always fetches fresh from DB instead of trusting payload.new.order_data,
+  // because Supabase Realtime UPDATE events may not include JSONB columns
+  // unless the table has REPLICA IDENTITY FULL (race condition / config risk).
+  const appliedRef = useRef<Set<string>>(new Set());
+
+  const fetchAndApplyApproval = useCallback(async (rowId: string) => {
+    if (appliedRef.current.has(rowId)) return; // already handled
+    appliedRef.current.add(rowId);
+
+    // Fetch the full row to guarantee order_data is complete
+    const { data: rows } = await supabase
+      .from("transfer_requests")
+      .select("*")
+      .eq("id", rowId)
+      .eq("status", "approved")
+      .limit(1);
+
+    const row = (rows?.[0] as unknown) as TransferRequest | undefined;
+    if (!row) {
+      // Row no longer 'approved' (already completed or missing) — remove from applied set so
+      // it can be retried if needed, but don't double-fire
+      appliedRef.current.delete(rowId);
+      return;
+    }
+
+    let lat = storeLatRef.current, lng = storeLngRef.current;
+    try {
+      const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
+        navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 })
+      );
+      lat = pos.coords.latitude; lng = pos.coords.longitude;
+    } catch { /* store fallback */ }
+
+    onOrderApprovedRef.current({ ...row.order_data, confirmed: false }, lat, lng);
+    setOutgoingPending(prev => { const n = new Set(prev); n.delete(row.order_id); return n; });
+    // Mark as completed so it won't be re-processed
+    await supabase.from("transfer_requests").update({ status: "completed" }).eq("id", row.id);
+    sendBrowserNotification("✅ Transferência aprovada!", `Pedido #${row.order_data?.displayId} está na sua rota.`, `approved-${row.id}`);
+  }, []); // reads only refs
+
   // ── Realtime subscription ──────────────────────────────────────────────────
   useEffect(() => {
     if (!myName) return;
@@ -125,21 +166,11 @@ export function useTransferRequests({
         event: "UPDATE", schema: "public", table: "transfer_requests",
       }, async (payload) => {
         const req = payload.new as TransferRequest;
+        // Only the requester cares about their own outgoing requests being resolved
         if (req.requester_name.toLowerCase() !== myName.toLowerCase()) return;
         if (req.status === "approved") {
-          // Use refs so we always call the current callback and store coords
-          // even though this channel was set up once on mount.
-          let lat = storeLatRef.current, lng = storeLngRef.current;
-          try {
-            const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
-              navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 })
-            );
-            lat = pos.coords.latitude; lng = pos.coords.longitude;
-          } catch { /* store fallback */ }
-          onOrderApprovedRef.current({ ...req.order_data, confirmed: false }, lat, lng);
-          setOutgoingPending(prev => { const n = new Set(prev); n.delete(req.order_id); return n; });
-          await supabase.from("transfer_requests").update({ status: "completed" }).eq("id", req.id);
-          sendBrowserNotification("✅ Transferência aprovada!", `Pedido #${req.order_data?.displayId} está na sua rota.`, `approved-${req.id}`);
+          // Do NOT trust payload.new.order_data — always re-fetch the full row
+          await fetchAndApplyApproval(req.id);
         } else if (req.status === "rejected") {
           setOutgoingPending(prev => { const n = new Set(prev); n.delete(req.order_id); return n; });
           sendBrowserNotification("❌ Transferência recusada", `${req.current_owner_name} recusou o pedido #${req.order_data?.displayId}.`, `rejected-${req.id}`);
@@ -148,45 +179,29 @@ export function useTransferRequests({
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [myName]); // intentionally omit onOrderApproved — we use onOrderApprovedRef instead
+  }, [myName, fetchAndApplyApproval]); // fetchAndApplyApproval is stable (useCallback [])
 
   // ── Polling fallback: catch approved requests missed by Realtime ───────────
-  // Runs every 10 s; picks up any "approved" rows that Realtime may have dropped.
+  // Runs every 3 s; picks up any "approved" rows that Realtime may have dropped.
   useEffect(() => {
     if (!myName) return;
-    const appliedApprovals = new Set<string>(); // track within this session
 
     const poll = async () => {
       const { data } = await supabase
         .from("transfer_requests")
-        .select("*")
+        .select("id")
         .eq("requester_name", myName)
         .eq("status", "approved");
 
       if (!data || data.length === 0) return;
-      for (const row of data as unknown as TransferRequest[]) {
-        if (appliedApprovals.has(row.id)) continue; // already handled this session
-        appliedApprovals.add(row.id);
-
-        // Use refs so the interval always sees current coords/callback
-        let lat = storeLatRef.current, lng = storeLngRef.current;
-        try {
-          const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
-            navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 })
-          );
-          lat = pos.coords.latitude; lng = pos.coords.longitude;
-        } catch { /* store fallback */ }
-
-        onOrderApprovedRef.current({ ...row.order_data, confirmed: false }, lat, lng);
-        setOutgoingPending(prev => { const n = new Set(prev); n.delete(row.order_id); return n; });
-        await supabase.from("transfer_requests").update({ status: "completed" }).eq("id", row.id);
-      }
+      // fetchAndApplyApproval is idempotent — safe to call for every approved row
+      await Promise.all(data.map(row => fetchAndApplyApproval(row.id)));
     };
 
     poll(); // run immediately on mount
-    const interval = setInterval(poll, 10_000);
+    const interval = setInterval(poll, 3_000); // 3s — fast fallback
     return () => clearInterval(interval);
-  }, [myName]); // intentionally omit onOrderApproved/storeLat/storeLng — we use refs
+  }, [myName, fetchAndApplyApproval]);
 
   const requestTransfer = useCallback(async (order: IFoodOrder, currentOwnerName: string): Promise<boolean> => {
     if (!myName) return false;
