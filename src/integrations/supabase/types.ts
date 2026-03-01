@@ -14,7 +14,14 @@ export type Database = {
   }
   public: {
     Tables: {
+      app_settings: {
+        Row: { key: string; value: string | null; updated_at: string }
+        Insert: { key: string; value?: string | null; updated_at?: string }
+        Update: { value?: string | null; updated_at?: string }
+        Relationships: []
+      }
       pending_orders: {
+
         Row: {
           id: string
           display_id: string | null

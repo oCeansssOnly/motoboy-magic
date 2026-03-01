@@ -9,20 +9,11 @@ import { ProfileMenu } from "@/components/ProfileMenu";
 import { HoldTransferModal } from "@/components/HoldTransferModal";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTransferRequests } from "@/hooks/useTransferRequests";
+import { useDriverLocation } from "@/hooks/useDriverLocation";
 import { IFoodOrder, CourierRoute, optimizeRoute, generateGoogleMapsUrl } from "@/lib/types";
 import {
-  Navigation,
-  RefreshCw,
-  Route,
-  MapPin,
-  Copy,
-  Check,
-  Loader2,
-  Package,
-  AlertCircle,
-  Bike,
-  Radio,
-  Store,
+  Navigation, RefreshCw, Route, MapPin, Copy, Check, Loader2, Package,
+  AlertCircle, Bike, Radio, Store, Edit2, Check as CheckIcon, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -88,6 +79,12 @@ const Index = () => {
   const [storeAddress, setStoreAddress] = useState<string | null>(
     () => localStorage.getItem(LS_ADDRESS_KEY) || null
   );
+  // Admin-editable store address
+  const [editingStoreAddr, setEditingStoreAddr] = useState(false);
+  const [storeAddrInput, setStoreAddrInput] = useState("");
+
+  // Driver real-time location
+  const { location: driverLocation } = useDriverLocation();
 
   const [loading, setLoading] = useState(false);
   const [polling, setPolling] = useState(false);
@@ -217,6 +214,33 @@ const Index = () => {
         });
       });
   }, [isDriver, driver]);
+
+  // Load store address from app_settings (admin-configurable) on mount
+  useEffect(() => {
+    supabase.from("app_settings" as any)
+      .select("key,value")
+      .in("key", ["store_address", "store_name"])
+      .then(({ data }) => {
+        if (!data) return;
+        const addr = data.find(r => r.key === "store_address")?.value;
+        if (addr) {
+          setStoreAddress(addr);
+          localStorage.setItem(LS_ADDRESS_KEY, addr);
+        }
+      });
+  }, []);
+
+  const saveStoreAddress = async (addr: string) => {
+    const trimmed = addr.trim();
+    if (!trimmed) return;
+    await supabase.from("app_settings" as any)
+      .update({ value: trimmed, updated_at: new Date().toISOString() })
+      .eq("key", "store_address");
+    setStoreAddress(trimmed);
+    localStorage.setItem(LS_ADDRESS_KEY, trimmed);
+    setEditingStoreAddr(false);
+    toast.success("Endereço da loja salvo!");
+  };
 
   // Merge new orders without wiping existing local state.
   // Uses ref so it always sees the current dismissed set — no nested setState.
@@ -665,13 +689,66 @@ const Index = () => {
         {/* ── Main queue view ── */}
         {!needsAuth && !checkingAuth && activeTab === "queue" && (
           <>
-            {/* Store address (from iFood) */}
-            {storeAddress && (
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Store size={11} />
-                <span className="truncate">Loja: {storeAddress}</span>
+            {/* ── Location info card (store + driver) ── */}
+            <div className="glass-card rounded-xl p-3 space-y-2">
+              {/* Store address */}
+              <div className="flex items-center gap-2">
+                <Store size={13} className="text-primary flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  {editingStoreAddr ? (
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        autoFocus
+                        value={storeAddrInput}
+                        onChange={e => setStoreAddrInput(e.target.value)}
+                        onKeyDown={e => { if (e.key === "Enter") saveStoreAddress(storeAddrInput); if (e.key === "Escape") setEditingStoreAddr(false); }}
+                        placeholder="Ex: Rua das Flores, 123 – Centro, SP"
+                        className="flex-1 bg-input text-sm text-foreground rounded-md px-2 py-1 outline-none border border-border focus:border-primary"
+                      />
+                      <button onClick={() => saveStoreAddress(storeAddrInput)} className="p-1 text-emerald-400 hover:text-emerald-300"><CheckIcon size={14} /></button>
+                      <button onClick={() => setEditingStoreAddr(false)} className="p-1 text-muted-foreground hover:text-foreground"><X size={14} /></button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-xs text-foreground font-medium truncate">
+                        {storeAddress ?? <span className="text-muted-foreground italic">Endereço da loja não configurado</span>}
+                      </span>
+                      {isAdmin && (
+                        <button
+                          onClick={() => { setStoreAddrInput(storeAddress ?? ""); setEditingStoreAddr(true); }}
+                          className="flex-shrink-0 text-muted-foreground hover:text-primary transition-colors"
+                          title="Editar endereço da loja"
+                        >
+                          <Edit2 size={11} />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  <p className="text-[10px] text-muted-foreground mt-0.5">Loja</p>
+                </div>
               </div>
-            )}
+
+              {/* Driver current location */}
+              {isDriver && (
+                <div className="flex items-center gap-2 border-t border-border/50 pt-2">
+                  <MapPin size={13} className="text-emerald-400 flex-shrink-0 animate-pulse" />
+                  <div className="flex-1 min-w-0">
+                    <span className="text-xs text-foreground font-medium truncate block">
+                      {driverLocation?.address ?? (
+                        <span className="text-muted-foreground italic">Obtendo localização...</span>
+                      )}
+                    </span>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                      Sua localização atual
+                      {driverLocation?.timestamp && (
+                        <> · atualizado às {new Date(driverLocation.timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</>
+                      )}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
 
             {/* Error */}
             {error && (
