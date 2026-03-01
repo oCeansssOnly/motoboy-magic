@@ -249,6 +249,45 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    // ─ Persist new orders in DB (survives refreshes / logouts) ───────────────
+    if (orders.length > 0) {
+      const rows = orders.map((o: any) => ({
+        id: o.id,
+        display_id: o.displayId,
+        localizador: o.localizador,
+        customer_name: o.customerName,
+        customer_phone: o.customerPhone,
+        customer_address: o.address,
+        lat: o.lat,
+        lng: o.lng,
+        total: o.total,
+        payment_method: o.paymentMethod,
+        items: o.items,
+        status: o.status,
+        created_at: o.createdAt,
+        delivery_code: o.deliveryCode,
+        raw_data: o.raw,
+        received_at: new Date().toISOString(),
+      }));
+      await fetch(sbUrl("/pending_orders"), {
+        method: "POST",
+        headers: { ...sbHeaders(), "Prefer": "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify(rows),
+      });
+    }
+
+    // ─ Remove concluded / cancelled from pending queue ────────────────────
+    const toRemove = [
+      ...concludedOrders.map((o: any) => o.id),
+      ...cancelledOrderIds,
+    ];
+    if (toRemove.length > 0) {
+      await fetch(sbUrl(`/pending_orders?id=in.(${toRemove.join(",")})`), {
+        method: "DELETE",
+        headers: sbHeaders(),
+      });
+    }
+
     return new Response(JSON.stringify({
       orders,
       concludedOrders,

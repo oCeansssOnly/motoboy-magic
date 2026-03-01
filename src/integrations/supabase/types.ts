@@ -14,7 +14,50 @@ export type Database = {
   }
   public: {
     Tables: {
+      pending_orders: {
+        Row: {
+          id: string
+          display_id: string | null
+          localizador: string | null
+          customer_name: string | null
+          customer_phone: string | null
+          customer_address: string | null
+          lat: number | null
+          lng: number | null
+          total: number | null
+          payment_method: string | null
+          items: string | null
+          status: string | null
+          created_at: string | null
+          delivery_code: string | null
+          raw_data: Record<string, unknown> | null
+          received_at: string
+        }
+        Insert: {
+          id: string
+          display_id?: string | null
+          localizador?: string | null
+          customer_name?: string | null
+          customer_phone?: string | null
+          customer_address?: string | null
+          lat?: number | null
+          lng?: number | null
+          total?: number | null
+          payment_method?: string | null
+          items?: string | null
+          status?: string | null
+          created_at?: string | null
+          delivery_code?: string | null
+          raw_data?: Record<string, unknown> | null
+          received_at?: string
+        }
+        Update: {
+          status?: string | null
+        }
+        Relationships: []
+      }
       confirmed_orders: {
+
         Row: {
           confirmation_code: string | null
           confirmed_at: string

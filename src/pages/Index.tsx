@@ -158,12 +158,47 @@ const Index = () => {
     })();
   }, []);
 
-  // Geolocation
-  useEffect(() => {
-    navigator.geolocation?.getCurrentPosition(
-      (pos) => { setStoreLat(pos.coords.latitude); setStoreLng(pos.coords.longitude); },
-      () => {}
-    );
+  // Load persisted orders from DB on mount (fixes refresh/logout order loss)
+  // This runs once after auth is confirmed — pulls the pending_orders table which
+  // the edge function keeps in sync with iFood events.
+  const loadPersistedOrders = useCallback(async () => {
+    try {
+      const { data } = await supabase
+        .from("pending_orders")
+        .select("id,display_id,localizador,customer_name,customer_phone,customer_address,lat,lng,total,payment_method,items,status,created_at,delivery_code")
+        .order("received_at", { ascending: true });
+
+      if (!data || data.length === 0) return;
+
+      const mapped: IFoodOrder[] = data.map(r => ({
+        id: r.id,
+        displayId: r.display_id ?? r.id.slice(0, 8),
+        localizador: r.localizador ?? "",
+        customerName: r.customer_name ?? "Cliente",
+        customerPhone: r.customer_phone ?? "",
+        address: r.customer_address ?? "Endereço não disponível",
+        lat: r.lat ?? 0,
+        lng: r.lng ?? 0,
+        total: r.total ?? 0,
+        paymentMethod: r.payment_method ?? "ONLINE",
+        items: r.items ?? "",
+        status: r.status ?? "ACCEPTED",
+        createdAt: r.created_at ?? new Date().toISOString(),
+        deliveryCode: r.delivery_code ?? "",
+        selected: false,
+        confirmed: false,
+        confirmationCode: "",
+      }));
+
+      setOrders(prev => {
+        const dismissed = dismissedIdsRef.current;
+        const existing = new Map(prev.map(o => [o.id, o]));
+        mapped.forEach(o => {
+          if (!dismissed.has(o.id) && !existing.has(o.id)) existing.set(o.id, o);
+        });
+        return Array.from(existing.values());
+      });
+    } catch { /* silent — edge function poll will populate on next refresh */ }
   }, []);
 
   // Driver delivery stats (for ProfileMenu)
@@ -223,6 +258,7 @@ const Index = () => {
           setStoreLat(prev => prev === -23.55052 ? data.storeLat : prev);
           setStoreLng(prev => prev === -46.633308 ? data.storeLng : prev);
         }
+        // Only toast 'orders processed' during non-silent loads (manual refresh)
         mergeOrders(data.orders);
         if (!silent && data.orders.length > 0) {
           toast.success(`${data.orders.length} pedido(s) processado(s)`);
@@ -287,6 +323,15 @@ const Index = () => {
     pollingRef.current = setInterval(() => fetchOrders(true), POLL_INTERVAL);
     return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
   }, [needsAuth, checkingAuth, fetchOrders]);
+
+  // Load persisted orders on auth confirmed, then start polling
+  useEffect(() => {
+    if (needsAuth || checkingAuth) return;
+    loadPersistedOrders();
+    fetchOrders(false);
+    pollingRef.current = setInterval(() => fetchOrders(true), POLL_INTERVAL);
+    return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
+  }, [needsAuth, checkingAuth, fetchOrders, loadPersistedOrders]);
 
   // ── Selection ──
   const toggleSelect = (id: string) => {
