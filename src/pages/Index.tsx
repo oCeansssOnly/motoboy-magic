@@ -121,18 +121,10 @@ const Index = () => {
       if (data?.needsAuth) { setNeedsAuth(true); return; }
       if (fnError) throw fnError;
       if (data?.orders && Array.isArray(data.orders)) {
-        if (silent) {
-          mergeOrders(data.orders);
-        } else {
-          // First load: set orders directly
-          setOrders(
-            data.orders.map((o: IFoodOrder) => ({
-              ...o, selected: false, confirmed: false, confirmationCode: "",
-            }))
-          );
-          if (data.orders.length > 0) {
-            toast.success(`${data.orders.length} pedido(s) carregado(s)`);
-          }
+        // Always merge to preserve local state like 'selected', 'confirmed', etc.
+        mergeOrders(data.orders);
+        if (!silent && data.orders.length > 0) {
+          toast.success(`${data.orders.length} pedido(s) processado(s)`);
         }
       } else if (data?.error) {
         if (!silent) { setError(data.error); toast.error("Erro ao buscar pedidos", { description: data.error }); }

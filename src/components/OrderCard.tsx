@@ -134,9 +134,16 @@ export function OrderCard({ order, index, selectable, selected, onToggleSelect, 
 
               {/* Confirmation section */}
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">
-                  Código de Confirmação
-                </label>
+                <div className="flex justify-between items-end mb-1">
+                  <label className="text-xs text-muted-foreground block">
+                    Código de Confirmação
+                  </label>
+                  {order.deliveryCode && (
+                     <span className="text-xs font-mono bg-primary/10 text-primary px-1.5 py-0.5 rounded">
+                       Código iFood: <b>{order.deliveryCode}</b>
+                     </span>
+                  )}
+                </div>
                 <div className="flex gap-2">
                   <input
                     type="text"
