@@ -148,8 +148,12 @@ Deno.serve(async (req: Request) => {
         const paymentMethods = Array.isArray(paymentsObj) ? paymentsObj : (paymentsObj.methods || []);
         const itemsArr = o.items || o.ITEMS || [];
 
-        const localizador = o.orderNumber || o.ORDERNUMBER || o.displayId || o.DISPLAYID || id.slice(0, 8);
         const displayId = o.displayId || o.DISPLAYID || id.slice(0, 8);
+        // iFood localizer: customer.phone.localizer is an 8-digit code displayed as XXXX XXXX
+        const rawLocalizer = customer.phone?.localizer || customer.PHONE?.LOCALIZER || "";
+        const localizador = rawLocalizer.length === 8
+          ? `${rawLocalizer.slice(0, 4)} ${rawLocalizer.slice(4)}`
+          : rawLocalizer || displayId;
         const addressStr = [
           address.streetName || address.STREETNAME || "",
           address.streetNumber || address.STREETNUMBER || "",
@@ -171,8 +175,8 @@ Deno.serve(async (req: Request) => {
           items: itemsArr.map((i: any) => `${i.quantity || i.QUANTITY}x ${i.name || i.NAME}`).join(", ") || "",
           status,
           createdAt: o.createdAt || o.CREATEDAT,
-          // pickupCode is the delivery confirmation code in iFood (required by courier to confirm delivery)
-          deliveryCode: delivery.pickupCode || delivery.PICKUPCODE || delivery.deliveryCode || delivery.DELIVERYCODE || o.confirmationCode || "",
+          // pickupCode is the 4-digit code the customer shows to the courier at delivery
+          deliveryCode: delivery.pickupCode || delivery.PICKUPCODE || "",
           raw: o,
         });
 

@@ -207,10 +207,23 @@ const Index = () => {
   };
 
   // ── Courier route assignment ──
-  const handleAssignCourier = (courierName: string) => {
+  const handleAssignCourier = async (courierName: string) => {
     if (selectedOrders.length === 0) return;
 
-    const ordersToAssign = selectedOrders.map((o) => ({ ...o, confirmed: false }));
+    // Dispatch all orders via iFood API first (fire and forget, best effort)
+    // This signals to iFood that the courier left the store.
+    const dispatchResults = await Promise.allSettled(
+      selectedOrders.map((o) =>
+        supabase.functions.invoke("ifood-dispatch", { body: { orderId: o.id } })
+      )
+    );
+    const failedCount = dispatchResults.filter((r) => r.status === "rejected").length;
+    if (failedCount > 0) {
+      toast.warning(`${failedCount} pedido(s) não despachados via API. Verifique o painel iFood.`);
+    }
+
+    // Mark orders as DISPATCHED locally so the confirmation section becomes visible
+    const ordersToAssign = selectedOrders.map((o) => ({ ...o, confirmed: false, status: "DISPATCHED" }));
     let assignedRouteId: string;
 
     setCourierRoutes((prev) => {

@@ -244,8 +244,8 @@ function DeliveryCard({ order, index, routeId, onConfirmed }: DeliveryCardProps)
         )}
       </div>
 
-      {/* Confirmation */}
-      {!order.confirmed && (
+      {/* Confirmation — only shown once the order is DISPATCHED (out for delivery) */}
+      {!order.confirmed && order.status === "DISPATCHED" && (
         <div className="pt-2 border-t border-border">
           <div className="flex justify-between items-end mb-1">
             <label className="text-xs text-muted-foreground block">Código de Confirmação</label>
