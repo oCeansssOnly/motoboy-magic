@@ -1,0 +1,11 @@
+﻿
+Deploying raw TS to eyhdtiriqlnkmmlhclcr...
+
+  Γ£ô  ifood-auth (updated)
+  Γ£ô  ifood-orders (updated)
+  Γ£ô  ifood-confirm (updated)
+
+Waiting 10s for cold start...
+
+Health: HTTP 503
+{"code":"BOOT_ERROR","message":"Function failed to start (please check logs)"}

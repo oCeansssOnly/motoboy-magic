@@ -1,9 +1,9 @@
 ﻿
 ≡ƒÜÇ  Deploying functions to project eyhdtiriqlnkmmlhclcr...
 
-  Γ£ô  ifood-auth (created)
-  Γ£ô  ifood-orders (created)
-  Γ£ô  ifood-confirm (created)
+  Γ£ô  ifood-auth (updated)
+  Γ£ô  ifood-orders (updated)
+  Γ£ô  ifood-confirm (updated)
 
 ≡ƒöæ  Buscando chaves de API...
 
