@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -6,31 +7,57 @@ const corsHeaders = {
 };
 
 const IFOOD_API = 'https://merchant-api.ifood.com.br';
+const IFOOD_AUTH_URL = 'https://merchant-api.ifood.com.br/authentication/v1.0/oauth/token';
 
-async function getAccessToken(): Promise<string> {
-  const clientId = Deno.env.get('IFOOD_CLIENT_ID');
-  const clientSecret = Deno.env.get('IFOOD_CLIENT_SECRET');
-  
-  if (!clientId || !clientSecret) {
-    throw new Error('iFood credentials not configured');
+async function getAccessToken(supabase: any): Promise<string> {
+  const clientId = Deno.env.get('IFOOD_CLIENT_ID')!;
+  const clientSecret = Deno.env.get('IFOOD_CLIENT_SECRET')!;
+
+  // Get stored tokens
+  const { data: tokens } = await supabase
+    .from('ifood_tokens')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (!tokens || tokens.length === 0) {
+    throw new Error('NOT_AUTHENTICATED: Configure a autenticação iFood primeiro.');
   }
 
-  const response = await fetch('https://merchant-api.ifood.com.br/authentication/v1.0/oauth/token', {
+  const token = tokens[0];
+  const isExpired = new Date(token.expires_at) < new Date();
+
+  if (!isExpired) {
+    return token.access_token;
+  }
+
+  // Refresh token
+  const res = await fetch(IFOOD_AUTH_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
-      grantType: 'client_credentials',
+      grantType: 'refresh_token',
       clientId,
       clientSecret,
+      refreshToken: token.refresh_token,
     }),
   });
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Auth failed [${response.status}]: ${error}`);
+  if (!res.ok) {
+    const error = await res.text();
+    throw new Error(`Token refresh failed [${res.status}]: ${error}`);
   }
 
-  const data = await response.json();
+  const data = await res.json();
+
+  // Update stored tokens
+  await supabase.from('ifood_tokens').update({
+    access_token: data.accessToken,
+    refresh_token: data.refreshToken || token.refresh_token,
+    expires_at: new Date(Date.now() + (data.expiresIn || 3600) * 1000).toISOString(),
+    updated_at: new Date().toISOString(),
+  }).eq('id', token.id);
+
   return data.accessToken;
 }
 
@@ -39,17 +66,17 @@ serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
+  const supabase = createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  );
+
   try {
-    const token = await getAccessToken();
-    const merchantId = Deno.env.get('IFOOD_MERCHANT_ID');
-    
-    if (!merchantId) {
-      throw new Error('IFOOD_MERCHANT_ID not configured');
-    }
+    const accessToken = await getAccessToken(supabase);
 
     // 1. Poll events
     const eventsRes = await fetch(`${IFOOD_API}/events/v1.0/events:polling`, {
-      headers: { 'Authorization': `Bearer ${token}` },
+      headers: { 'Authorization': `Bearer ${accessToken}` },
     });
 
     let events: any[] = [];
@@ -61,33 +88,32 @@ serve(async (req) => {
         await fetch(`${IFOOD_API}/events/v1.0/events/acknowledgment`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${token}`,
+            'Authorization': `Bearer ${accessToken}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(events.map((e: any) => ({ id: e.id }))),
         });
       }
+    } else if (eventsRes.status === 204) {
+      // No events - normal
+      await eventsRes.text();
     } else {
       const text = await eventsRes.text();
-      console.log(`Events polling returned ${eventsRes.status}: ${text}`);
+      console.log(`Events polling: ${eventsRes.status}: ${text}`);
     }
 
-    // 2. Get confirmed/accepted order IDs from events
-    const confirmedOrderIds = events
-      .filter((e: any) => e.code === 'CFM' || e.code === 'PLC' || e.code === 'RTP')
+    // 2. Get order IDs from events (PLACED, CONFIRMED, READY_TO_PICKUP)
+    const orderIds = events
+      .filter((e: any) => ['PLC', 'CFM', 'RTP', 'PLACED', 'CONFIRMED', 'READY_TO_PICKUP'].includes(e.code || e.fullCode))
       .map((e: any) => e.orderId);
 
-    // Also try to get orders directly from the merchant
-    // Fetch details for each order
+    const uniqueOrderIds = [...new Set(orderIds)] as string[];
     const orders: any[] = [];
-    
-    // Get unique order IDs
-    const uniqueOrderIds = [...new Set(confirmedOrderIds)] as string[];
-    
+
     for (const orderId of uniqueOrderIds) {
       try {
         const orderRes = await fetch(`${IFOOD_API}/order/v1.0/orders/${orderId}`, {
-          headers: { 'Authorization': `Bearer ${token}` },
+          headers: { 'Authorization': `Bearer ${accessToken}` },
         });
         
         if (orderRes.ok) {
@@ -108,21 +134,26 @@ serve(async (req) => {
             deliveryCode: order.delivery?.deliveryCode || '',
           });
         } else {
-          await orderRes.text(); // consume body
+          await orderRes.text();
         }
       } catch (err) {
         console.error(`Error fetching order ${orderId}:`, err);
       }
     }
 
-    return new Response(JSON.stringify({ orders, events: events.length }), {
+    return new Response(JSON.stringify({ orders, eventsCount: events.length }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error: unknown) {
     console.error('Error:', error);
     const message = error instanceof Error ? error.message : 'Unknown error';
-    return new Response(JSON.stringify({ error: message, orders: [] }), {
-      status: 500,
+    const isAuthError = message.includes('NOT_AUTHENTICATED');
+    return new Response(JSON.stringify({ 
+      error: message, 
+      orders: [],
+      needsAuth: isAuthError,
+    }), {
+      status: isAuthError ? 401 : 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
@@ -130,13 +161,6 @@ serve(async (req) => {
 
 function formatAddress(addr: any): string {
   if (!addr) return 'Endereço não disponível';
-  const parts = [
-    addr.streetName,
-    addr.streetNumber,
-    addr.complement,
-    addr.neighborhood,
-    addr.city,
-    addr.state,
-  ].filter(Boolean);
-  return parts.join(', ') || 'Endereço não disponível';
+  return [addr.streetName, addr.streetNumber, addr.complement, addr.neighborhood, addr.city, addr.state]
+    .filter(Boolean).join(', ') || 'Endereço não disponível';
 }
