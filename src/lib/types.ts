@@ -26,19 +26,23 @@ export interface CourierRoute {
   name: string;
   orders: IFoodOrder[];
   createdAt: string;
+  /** GPS start point. Defaults to store when admin creates route.
+   *  Updated to driver's current GPS position on order transfer. */
+  startLat?: number;
+  startLng?: number;
 }
 
 export function optimizeRoute(
   orders: IFoodOrder[],
-  storeLat: number,
-  storeLng: number
+  startLat: number,
+  startLng: number
 ): IFoodOrder[] {
   if (orders.length <= 1) return [...orders];
 
   const remaining = [...orders];
   const ordered: IFoodOrder[] = [];
-  let currentLat = storeLat;
-  let currentLng = storeLng;
+  let currentLat = startLat;
+  let currentLng = startLng;
 
   while (remaining.length > 0) {
     let nearestIdx = 0;
@@ -76,16 +80,21 @@ function haversine(lat1: number, lng1: number, lat2: number, lng2: number): numb
 export function generateGoogleMapsUrl(
   orders: IFoodOrder[],
   storeLat: number,
-  storeLng: number
+  storeLng: number,
+  /** Override starting point (e.g. driver's GPS on transfer) */
+  startLat?: number,
+  startLng?: number,
 ): string {
   if (orders.length === 0) return '';
 
+  const origin = `${startLat ?? storeLat},${startLng ?? storeLng}`;
   const storePoint = `${storeLat},${storeLng}`;
   const waypoints = orders.map((o) => `${o.lat},${o.lng}`);
 
-  // Store -> orders -> Store
-  return `https://www.google.com/maps/dir/${storePoint}/${waypoints.join('/')}/${storePoint}`;
+  // origin → deliveries → store (always returns to store)
+  return `https://www.google.com/maps/dir/${origin}/${waypoints.join('/')}/${storePoint}`;
 }
+
 
 export function getPaymentLabel(method: string): string {
   const labels: Record<string, string> = {

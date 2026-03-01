@@ -2,37 +2,53 @@ import { useState } from "react";
 import { IFoodOrder, CourierRoute, optimizeRoute, generateGoogleMapsUrl, getPaymentLabel } from "@/lib/types";
 import {
   Navigation, MapPin, Phone, Package, Check, Loader2, ChevronDown, ChevronUp,
-  Clock, ShoppingBag, Copy, X, Bike
+  Clock, ShoppingBag, Copy, X, Bike, ArrowRightLeft,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
+import { HoldTransferModal } from "@/components/HoldTransferModal";
 
 interface CourierTabProps {
   route: CourierRoute;
   storeLat: number;
   storeLng: number;
+  /** Name of the currently logged-in driver (null for admins) */
+  currentDriverName: string | null;
   onClose: () => void;
   onOrderConfirmed: (routeId: string, orderId: string, code: string) => void;
+  onTransferOrder: (fromRouteId: string, orderId: string) => void;
 }
 
-export function CourierTab({ route, storeLat, storeLng, onClose, onOrderConfirmed }: CourierTabProps) {
+export function CourierTab({
+  route, storeLat, storeLng, currentDriverName,
+  onClose, onOrderConfirmed, onTransferOrder,
+}: CourierTabProps) {
   const [completedOpen, setCompletedOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const activeOrders = route.orders.filter((o) => !o.confirmed);
   const completedOrders = route.orders.filter((o) => o.confirmed);
-  const optimized = optimizeRoute(activeOrders, storeLat, storeLng);
+
+  // Use route start point (GPS for transferred routes) or store as fallback
+  const startLat = route.startLat ?? storeLat;
+  const startLng = route.startLng ?? storeLng;
+  const optimized = optimizeRoute(activeOrders, startLat, startLng);
+
+  const isOwnRoute = currentDriverName?.toLowerCase() === route.name.toLowerCase();
 
   const openRoute = () => {
     if (activeOrders.length === 0) { toast.info("Todas as entregas concluídas!"); return; }
-    window.open(generateGoogleMapsUrl(optimized, storeLat, storeLng), "_blank");
+    window.open(generateGoogleMapsUrl(optimized, storeLat, storeLng, startLat, startLng), "_blank");
   };
 
   const copyRoute = () => {
     if (activeOrders.length === 0) return;
-    const url = generateGoogleMapsUrl(optimized, storeLat, storeLng);
+    const url = generateGoogleMapsUrl(optimized, storeLat, storeLng, startLat, startLng);
+    const startLabel = (startLat !== storeLat || startLng !== storeLng) ? "📍 Posição atual" : "🏪 Loja";
     const desc = optimized.map((o, i) => `${i + 1}. ${o.customerName} – ${o.address}`).join("\n");
-    navigator.clipboard.writeText(`ROTA – ${route.name} (${optimized.length} paradas)\n${"─".repeat(38)}\n${desc}\n${"─".repeat(38)}\n🗺️ ${url}`);
+    navigator.clipboard.writeText(
+      `ROTA – ${route.name} (${optimized.length} paradas)\n${"─".repeat(38)}\n${desc}\n${"─".repeat(38)}\n${startLabel} → … → 🏪 Loja\n🗺️ ${url}`
+    );
     setCopied(true);
     toast.success("Rota copiada!");
     setTimeout(() => setCopied(false), 2000);
@@ -50,6 +66,9 @@ export function CourierTab({ route, storeLat, storeLng, onClose, onOrderConfirme
             <p className="font-semibold text-foreground">{route.name}</p>
             <p className="text-xs text-muted-foreground">
               {activeOrders.length} ativa(s) · {completedOrders.length} entregue(s)
+              {route.startLat && (route.startLat !== storeLat || route.startLng !== storeLng) && (
+                <span className="ml-1.5 text-primary">· 📍 Início: posição atual</span>
+              )}
             </p>
           </div>
         </div>
@@ -63,7 +82,7 @@ export function CourierTab({ route, storeLat, storeLng, onClose, onOrderConfirme
         <div className="glass-card rounded-lg p-3 space-y-2">
           <p className="text-xs text-muted-foreground">
             <Navigation size={11} className="inline mr-1" />
-            Loja → {optimized.map((o) => o.customerName).join(" → ")} → Loja
+            {route.startLat && route.startLat !== storeLat ? "Posição atual" : "Loja"} → {optimized.map((o) => o.customerName).join(" → ")} → Loja
           </p>
           <div className="flex gap-2">
             <button
@@ -100,7 +119,10 @@ export function CourierTab({ route, storeLat, storeLng, onClose, onOrderConfirme
             order={order}
             index={i}
             routeId={route.id}
+            isOwnRoute={isOwnRoute}
             onConfirmed={onOrderConfirmed}
+            onTransfer={() => onTransferOrder(route.id, order.id)}
+            fromDriverName={route.name}
           />
         ))}
       </div>
@@ -126,7 +148,10 @@ export function CourierTab({ route, storeLat, storeLng, onClose, onOrderConfirme
                   order={order}
                   index={i}
                   routeId={route.id}
+                  isOwnRoute={isOwnRoute}
                   onConfirmed={onOrderConfirmed}
+                  onTransfer={() => onTransferOrder(route.id, order.id)}
+                  fromDriverName={route.name}
                 />
               ))}
             </div>
@@ -142,27 +167,28 @@ interface DeliveryCardProps {
   order: IFoodOrder;
   index: number;
   routeId: string;
+  isOwnRoute: boolean;
+  fromDriverName: string;
   onConfirmed: (routeId: string, orderId: string, code: string) => void;
+  onTransfer: () => void;
 }
 
-function DeliveryCard({ order, index, routeId, onConfirmed }: DeliveryCardProps) {
-  const [confirmCode, setConfirmCode] = useState(""); // always starts empty — courier must ask customer
+function DeliveryCard({ order, index, routeId, isOwnRoute, fromDriverName, onConfirmed, onTransfer }: DeliveryCardProps) {
+  const [confirmCode, setConfirmCode] = useState("");
   const [confirming, setConfirming] = useState(false);
+  const [showTransferModal, setShowTransferModal] = useState(false);
 
   const timeAgo = order.createdAt ? getTimeAgo(order.createdAt) : "";
 
   const handleConfirm = async () => {
     if (!confirmCode.trim()) { toast.error("Informe o código de confirmação!"); return; }
-
     setConfirming(true);
     try {
       const { data, error } = await supabase.functions.invoke("ifood-confirm", {
         body: { orderId: order.id, confirmationCode: confirmCode.trim(), motoboyName: "Motoboy" },
       });
       if (error) throw error;
-
       if (!data?.success) {
-        // iFood rejected the code
         if (data?.invalidCode) {
           toast.error("Código inválido!", { description: "O código não confere com o do cliente no iFood." });
         } else {
@@ -170,7 +196,6 @@ function DeliveryCard({ order, index, routeId, onConfirmed }: DeliveryCardProps)
         }
         return;
       }
-
       toast.success(`✅ Pedido ${order.displayId} confirmado via iFood!`);
       onConfirmed(routeId, order.id, confirmCode.trim());
     } catch {
@@ -180,98 +205,127 @@ function DeliveryCard({ order, index, routeId, onConfirmed }: DeliveryCardProps)
     }
   };
 
+  const handleTransferConfirmed = () => {
+    setShowTransferModal(false);
+    onTransfer();
+  };
+
   return (
-    <div
-      className={`glass-card rounded-lg p-4 animate-slide-up space-y-3 transition-all ${order.confirmed ? "opacity-60 border-l-2 border-l-accent" : "border-l-2 border-l-primary"}`}
-      style={{ animationDelay: `${index * 50}ms` }}
-    >
-      {/* Top row */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground">
-              #{order.displayId}
-            </span>
-            <span className="text-xs text-muted-foreground flex items-center gap-1">
-              <Clock size={11} /> {timeAgo}
-            </span>
-            {order.confirmed && (
-              <span className="text-xs px-1.5 py-0.5 rounded bg-accent text-accent-foreground font-medium">✅ Entregue</span>
-            )}
+    <>
+      <div
+        className={`glass-card rounded-lg p-4 animate-slide-up space-y-3 transition-all ${order.confirmed ? "opacity-60 border-l-2 border-l-accent" : "border-l-2 border-l-primary"}`}
+        style={{ animationDelay: `${index * 50}ms` }}
+      >
+        {/* Top row */}
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground">
+                #{order.displayId}
+              </span>
+              <span className="text-xs text-muted-foreground flex items-center gap-1">
+                <Clock size={11} /> {timeAgo}
+              </span>
+              {order.confirmed && (
+                <span className="text-xs px-1.5 py-0.5 rounded bg-accent text-accent-foreground font-medium">✅ Entregue</span>
+              )}
+            </div>
+            <h3 className="font-semibold text-foreground mt-1">{order.customerName}</h3>
           </div>
-          <h3 className="font-semibold text-foreground mt-1">{order.customerName}</h3>
+          <span className="text-sm font-semibold text-foreground whitespace-nowrap">
+            R$ {(order.total / 100).toFixed(2)}
+          </span>
         </div>
-        <span className="text-sm font-semibold text-foreground whitespace-nowrap">
-          R$ {(order.total / 100).toFixed(2)}
-        </span>
-      </div>
 
-      {/* Address */}
-      <div className="flex items-start gap-1.5">
-        <MapPin size={13} className="text-primary mt-0.5 flex-shrink-0" />
-        <p className="text-sm text-muted-foreground leading-snug">{order.address}</p>
-      </div>
-
-      {/* Phone */}
-      {order.customerPhone && (
-        <div className="flex items-center gap-1.5">
-          <Phone size={13} className="text-info flex-shrink-0" />
-          <a href={`tel:${order.customerPhone}`} className="text-sm text-muted-foreground hover:text-primary transition-colors">
-            {order.customerPhone}
-          </a>
-        </div>
-      )}
-
-      {/* Items */}
-      {order.items && (
+        {/* Address */}
         <div className="flex items-start gap-1.5">
-          <ShoppingBag size={13} className="text-muted-foreground mt-0.5 flex-shrink-0" />
-          <p className="text-xs text-muted-foreground">{order.items}</p>
+          <MapPin size={13} className="text-primary mt-0.5 flex-shrink-0" />
+          <p className="text-sm text-muted-foreground leading-snug">{order.address}</p>
         </div>
-      )}
 
-      {/* Payment + maps */}
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">{getPaymentLabel(order.paymentMethod)}</span>
-        {order.lat !== 0 && (
-          <a
-            href={`https://maps.google.com/?q=${order.lat},${order.lng}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-primary hover:text-primary/80 flex items-center gap-1 transition-colors"
-          >
-            <MapPin size={11} /> Ver no mapa
-          </a>
+        {/* Phone */}
+        {order.customerPhone && (
+          <div className="flex items-center gap-1.5">
+            <Phone size={13} className="text-info flex-shrink-0" />
+            <a href={`tel:${order.customerPhone}`} className="text-sm text-muted-foreground hover:text-primary transition-colors">
+              {order.customerPhone}
+            </a>
+          </div>
+        )}
+
+        {/* Items */}
+        {order.items && (
+          <div className="flex items-start gap-1.5">
+            <ShoppingBag size={13} className="text-muted-foreground mt-0.5 flex-shrink-0" />
+            <p className="text-xs text-muted-foreground">{order.items}</p>
+          </div>
+        )}
+
+        {/* Payment + maps */}
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">{getPaymentLabel(order.paymentMethod)}</span>
+          {order.lat !== 0 && (
+            <a
+              href={`https://maps.google.com/?q=${order.lat},${order.lng}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-primary hover:text-primary/80 flex items-center gap-1 transition-colors"
+            >
+              <MapPin size={11} /> Ver no mapa
+            </a>
+          )}
+        </div>
+
+        {/* Transfer button — shown only when this is NOT the logged-in driver's own route */}
+        {!isOwnRoute && !order.confirmed && (
+          <div className="pt-2 border-t border-border">
+            <button
+              onClick={() => setShowTransferModal(true)}
+              className="w-full py-2 rounded-lg bg-secondary border border-border text-sm text-muted-foreground hover:text-foreground hover:border-primary/40 transition-all flex items-center justify-center gap-2"
+            >
+              <ArrowRightLeft size={14} />
+              Transferir para mim
+            </button>
+          </div>
+        )}
+
+        {/* Confirmation — only own route, dispatched, not confirmed */}
+        {isOwnRoute && !order.confirmed && order.status === "DISPATCHED" && (
+          <div className="pt-2 border-t border-border">
+            <label className="text-xs text-muted-foreground mb-1.5 block">
+              🔒 Peça o código de confirmação ao cliente:
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                inputMode="numeric"
+                value={confirmCode}
+                onChange={(e) => setConfirmCode(e.target.value)}
+                placeholder="Digite o código do cliente..."
+                className="flex-1 bg-input border border-border rounded px-3 py-1.5 text-sm text-foreground focus:ring-1 focus:ring-primary outline-none font-mono"
+              />
+              <button
+                onClick={handleConfirm}
+                disabled={confirming}
+                className="px-3 py-1.5 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-all flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {confirming ? <Loader2 size={12} className="animate-spin" /> : <Package size={12} />}
+                {confirming ? "..." : "Confirmar"}
+              </button>
+            </div>
+          </div>
         )}
       </div>
 
-      {/* Confirmation — only shown once the order is DISPATCHED (out for delivery) */}
-      {!order.confirmed && order.status === "DISPATCHED" && (
-        <div className="pt-2 border-t border-border">
-          <label className="text-xs text-muted-foreground mb-1.5 block">
-            🔒 Peça o código de confirmação ao cliente:
-          </label>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              inputMode="numeric"
-              value={confirmCode}
-              onChange={(e) => setConfirmCode(e.target.value)}
-              placeholder="Digite o código do cliente..."
-              className="flex-1 bg-input border border-border rounded px-3 py-1.5 text-sm text-foreground focus:ring-1 focus:ring-primary outline-none font-mono"
-            />
-            <button
-              onClick={handleConfirm}
-              disabled={confirming}
-              className="px-3 py-1.5 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-all flex items-center gap-1.5 disabled:opacity-50"
-            >
-              {confirming ? <Loader2 size={12} className="animate-spin" /> : <Package size={12} />}
-              {confirming ? "..." : "Confirmar"}
-            </button>
-          </div>
-        </div>
+      {showTransferModal && (
+        <HoldTransferModal
+          order={order}
+          fromDriverName={fromDriverName}
+          onCancel={() => setShowTransferModal(false)}
+          onTransfer={handleTransferConfirmed}
+        />
       )}
-    </div>
+    </>
   );
 }
 

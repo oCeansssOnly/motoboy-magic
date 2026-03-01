@@ -57,7 +57,7 @@ function saveDismissedIds(ids: Set<string>) {
 
 const Index = () => {
   const navigate = useNavigate();
-  const { user, loading: authLoading, isApproved, isDriver, driver } = useAuth();
+  const { user, loading: authLoading, isApproved, isAdmin, isDriver, driver } = useAuth();
   const [driverStats, setDriverStats] = useState({ total: 0, thisMonth: 0 });
   const [orders, setOrders] = useState<IFoodOrder[]>([]);
   const [courierRoutes, setCourierRoutes] = useState<CourierRoute[]>(loadRoutesFromStorage);
@@ -334,6 +334,62 @@ const Index = () => {
     );
   };
 
+  // ── Order transfer (driver takes order from another route) ──────────────────
+  const handleTransferOrder = async (fromRouteId: string, orderId: string) => {
+    if (!driver) return;
+
+    // Try to capture current GPS position; fall back to store coords
+    let startLat = storeLat;
+    let startLng = storeLng;
+    try {
+      const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
+        navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 })
+      );
+      startLat = pos.coords.latitude;
+      startLng = pos.coords.longitude;
+    } catch { /* use store coords as fallback */ }
+
+    setCourierRoutes((prev) => {
+      // Find the order in the source route
+      const fromRoute = prev.find(r => r.id === fromRouteId);
+      const order = fromRoute?.orders.find(o => o.id === orderId);
+      if (!order) return prev;
+
+      // Remove from source (remove entire route if now empty)
+      const withoutOrder = prev
+        .map(r => r.id === fromRouteId ? { ...r, orders: r.orders.filter(o => o.id !== orderId) } : r)
+        .filter(r => r.orders.length > 0);
+
+      // Find or create a route for this driver
+      const destIdx = withoutOrder.findIndex(r => r.name.toLowerCase() === driver.name.toLowerCase());
+      if (destIdx >= 0) {
+        const updated = [...withoutOrder];
+        updated[destIdx] = { ...updated[destIdx], startLat, startLng, orders: [...updated[destIdx].orders, order] };
+        return updated;
+      } else {
+        const newRoute = {
+          id: crypto.randomUUID(),
+          name: driver.name,
+          orders: [order],
+          startLat,
+          startLng,
+          createdAt: new Date().toISOString(),
+        };
+        return [...withoutOrder, newRoute];
+      }
+    });
+
+    toast.success(`Pedido transferido para você! Rota atualizada.`);
+    // Switch to own route tab
+    setTimeout(() => {
+      setCourierRoutes(prev => {
+        const ownRoute = prev.find(r => r.name.toLowerCase() === driver.name.toLowerCase());
+        if (ownRoute) setActiveTab(ownRoute.id);
+        return prev;
+      });
+    }, 100);
+  };
+
   const handleConfirmOrderInQueue = (orderId: string, code: string) => {
     setOrders((prev) =>
       prev.map((o) => o.id === orderId ? { ...o, confirmed: true, confirmationCode: code } : o)
@@ -442,8 +498,10 @@ const Index = () => {
             route={activeRouteData}
             storeLat={storeLat}
             storeLng={storeLng}
+            currentDriverName={isDriver ? driver?.name ?? null : null}
             onClose={() => handleCloseCourierRoute(activeRouteData.id)}
             onOrderConfirmed={handleOrderConfirmed}
+            onTransferOrder={handleTransferOrder}
           />
         )}
 
@@ -546,12 +604,24 @@ const Index = () => {
                     Loja → {optimizedRoute.map((o) => o.customerName).join(" → ")} → Loja
                   </p>
                   <div className="space-y-1.5">
-                    <button
-                      onClick={() => setShowAssignModal(true)}
-                      className="w-full py-3 rounded-lg bg-primary text-primary-foreground font-semibold text-sm hover:bg-primary/90 transition-all glow-primary flex items-center justify-center gap-2"
-                    >
-                      <Bike size={16} /> Enviar para Motoboy ({selectedOrders.length})
-                    </button>
+                    {/* Admin: full dispatch modal | Driver: assign to self only */}
+                    {isAdmin ? (
+                      <button
+                        onClick={() => setShowAssignModal(true)}
+                        className="w-full py-3 rounded-lg bg-primary text-primary-foreground font-semibold text-sm hover:bg-primary/90 transition-all glow-primary flex items-center justify-center gap-2"
+                      >
+                        <Bike size={16} /> Enviar para Motoboy ({selectedOrders.length})
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => driver && handleAssignCourier(driver.name)}
+                        disabled={assigning || !driver}
+                        className="w-full py-3 rounded-lg bg-primary text-primary-foreground font-semibold text-sm hover:bg-primary/90 transition-all glow-primary flex items-center justify-center gap-2 disabled:opacity-50"
+                      >
+                        {assigning ? <Loader2 size={16} className="animate-spin" /> : <Bike size={16} />}
+                        {assigning ? "Atribuindo..." : `Atribuir a Mim (${selectedOrders.length})`}
+                      </button>
+                    )}
                     <div className="flex gap-2">
                       <button
                         onClick={openRoute}
