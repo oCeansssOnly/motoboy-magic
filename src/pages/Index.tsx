@@ -190,6 +190,20 @@ const Index = () => {
       </header>
 
       <main className="container py-6 space-y-4 max-w-lg mx-auto">
+        {/* Auth check */}
+        {checkingAuth && (
+          <div className="text-center py-12">
+            <Loader2 size={32} className="text-primary animate-spin mx-auto mb-4" />
+            <p className="text-sm text-muted-foreground">Verificando autenticação iFood...</p>
+          </div>
+        )}
+
+        {needsAuth && !checkingAuth && (
+          <IFoodSetup onAuthenticated={() => { setNeedsAuth(false); fetchOrders(); }} />
+        )}
+
+        {!needsAuth && !checkingAuth && (
+        <>
         {/* Store location config */}
         <button
           onClick={() => setShowStoreConfig(!showStoreConfig)}
