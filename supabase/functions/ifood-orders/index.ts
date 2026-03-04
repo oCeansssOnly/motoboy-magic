@@ -64,6 +64,44 @@ Deno.serve(async (req: Request) => {
   try {
     const accessToken = await getAccessToken();
 
+    // ── Validate action: cross-check pending_orders against live iFood API ──
+    const body = req.method === "POST" ? (await req.json().catch(() => null)) : null;
+    if (body?.action === "validate" && Array.isArray(body.ids) && body.ids.length > 0) {
+      const VALID_STATUSES = new Set(["ACCEPTED", "DISPATCHED"]);
+      const ids: string[] = body.ids;
+
+      const results = await Promise.all(
+        ids.map(async (id: string) => {
+          try {
+            const oRes = await fetch(`${IFOOD_API}/order/v1.0/orders/${id}`, {
+              headers: { "Authorization": `Bearer ${accessToken}` },
+            });
+            if (oRes.status !== 200) { await oRes.text(); return { id, valid: false }; }
+            const o = await safeJson(oRes);
+            const status = (o?.orderStatus || o?.ORDERSTATUS || "").toUpperCase();
+            return { id, valid: VALID_STATUSES.has(status) };
+          } catch {
+            return { id, valid: false };
+          }
+        })
+      );
+
+      const validIds = results.filter(r => r.valid).map(r => r.id);
+      const staleIds = results.filter(r => !r.valid).map(r => r.id);
+
+      // Delete stale orders from pending_orders immediately
+      if (staleIds.length > 0) {
+        await fetch(sbUrl(`/pending_orders?id=in.(${staleIds.join(",")})`), {
+          method: "DELETE",
+          headers: sbHeaders(),
+        });
+      }
+
+      return new Response(JSON.stringify({ validIds, staleIds }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // ─ Fetch merchant list for store address (independent of order events) ───
     let topLevelMerchantAddress: string | null = null;
     let topLevelStoreLat: number | null = null;

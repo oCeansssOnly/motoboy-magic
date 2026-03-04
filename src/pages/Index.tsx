@@ -33,6 +33,21 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
+/**
+ * Polyfill for crypto.randomUUID() — works on HTTP (local network IPs)
+ * where the Web Crypto API's randomUUID is unavailable (non-secure context).
+ */
+function generateId(): string {
+  if (typeof crypto !== "undefined" && typeof (crypto as any).randomUUID === "function") {
+    return (crypto as any).randomUUID() as string;
+  }
+  // Fallback: manual UUID v4 (for HTTP / non-secure contexts like LAN IPs)
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    return (c === "x" ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
+
 function loadRoutesFromStorage(): CourierRoute[] {
   try {
     const raw = localStorage.getItem(LS_ROUTES_KEY);
@@ -121,7 +136,7 @@ const Index = () => {
         updated = [...prev];
         updated[destIdx] = { ...updated[destIdx], startLat: gpsLat, startLng: gpsLng, orders: [...updated[destIdx].orders, order] };
       } else {
-        const newRoute: CourierRoute = { id: crypto.randomUUID(), name: currentDriver.name, orders: [order], startLat: gpsLat, startLng: gpsLng, createdAt: new Date().toISOString() };
+        const newRoute: CourierRoute = { id: generateId(), name: currentDriver.name, orders: [order], startLat: gpsLat, startLng: gpsLng, createdAt: new Date().toISOString() };
         updated = [...prev, newRoute];
       }
       return cleanupEmptyRoutes(updated);
@@ -178,9 +193,9 @@ const Index = () => {
     })();
   }, []);
 
-  // Load persisted orders from DB on mount (fixes refresh/logout order loss)
-  // This runs once after auth is confirmed — pulls the pending_orders table which
-  // the edge function keeps in sync with iFood events.
+  // Load persisted orders from DB on mount (fixes refresh/logout order loss).
+  // After loading from pending_orders, we cross-check every ID against the live
+  // iFood API via the validate action — only truly valid orders are shown.
   const loadPersistedOrders = useCallback(async () => {
     try {
       const { data } = await supabase
@@ -211,10 +226,30 @@ const Index = () => {
         confirmationCode: "",
       }));
 
+      // ── Cross-check with iFood API: discard stale/phantom orders ─────────
+      let validIdSet: Set<string> | null = null;
+      try {
+        const ids = mapped.map(o => o.id);
+        const { data: vData } = await supabase.functions.invoke("ifood-orders", {
+          body: { action: "validate", ids },
+        });
+        if (Array.isArray(vData?.validIds)) {
+          validIdSet = new Set<string>(vData.validIds);
+          if (vData.staleIds?.length > 0) {
+            console.log(`[loadPersistedOrders] Purged ${vData.staleIds.length} stale order(s) from DB.`);
+          }
+        }
+      } catch {
+        // If validation fails (e.g. network issue), show all DB orders as fallback
+        validIdSet = null;
+      }
+
+      const validOrders = validIdSet ? mapped.filter(o => validIdSet!.has(o.id)) : mapped;
+
       setOrders(prev => {
         const dismissed = dismissedIdsRef.current;
         const existing = new Map(prev.map(o => [o.id, o]));
-        mapped.forEach(o => {
+        validOrders.forEach(o => {
           if (!dismissed.has(o.id) && !existing.has(o.id)) existing.set(o.id, o);
         });
         return Array.from(existing.values());
@@ -328,14 +363,17 @@ const Index = () => {
             toFinalize.forEach(async order => {
               const cInfo = concluded.find(c => c.id === order.id)!;
               const distKm = haversineKm(storeLat, storeLng, cInfo.lat || order.lat, cInfo.lng || order.lng) * 2;
-              await supabase.from("confirmed_orders").insert({
+              // upsert prevents duplicate rows if driver already confirmed before iFood concluded
+              await supabase.from("confirmed_orders").upsert({
                 ifood_order_id: order.id, customer_name: order.customerName,
                 customer_address: order.address, motoboy_name: route.name,
                 status: "concluded_by_ifood",
                 distance_km: Math.round(distKm * 10) / 10,
                 order_total_cents: order.total,
                 delivery_lat: cInfo.lat || order.lat, delivery_lng: cInfo.lng || order.lng,
-              });
+              }, { onConflict: "ifood_order_id" });
+              // Remove from pending queue — order is done
+              supabase.from("pending_orders").delete().eq("id", order.id).then(() => {});
             });
             // Mark confirmed so they appear greyed-out then route auto-closes
             return { ...route, orders: route.orders.map(o => concluded.some(c => c.id === o.id) ? { ...o, confirmed: true } : o) };
@@ -491,7 +529,7 @@ const Index = () => {
         return newRoutes;
       } else {
         const newRoute: CourierRoute = {
-          id: crypto.randomUUID(),
+          id: generateId(),
           name: courierName,
           orders: ordersToAssign,
           createdAt: new Date().toISOString(),
@@ -509,9 +547,9 @@ const Index = () => {
     setDismissedOrderIds(nextDismissed);
     saveDismissedIds(nextDismissed);
 
-    // Update pending_orders status to IN_ROUTE so DB reflects the assignment
+    // Delete from pending_orders — orders are now in a route, no longer pending
     supabase.from("pending_orders")
-      .update({ status: "IN_ROUTE" })
+      .delete()
       .in("id", [...assignedIds])
       .then(() => {});
 
@@ -599,7 +637,7 @@ const Index = () => {
         updated[destIdx] = { ...updated[destIdx], orders: [...updated[destIdx].orders, orderToAdd] };
         return updated;
       }
-      const newRoute: CourierRoute = { id: crypto.randomUUID(), name: driverName, orders: [orderToAdd], startLat: storeLat, startLng: storeLng, createdAt: new Date().toISOString() };
+      const newRoute: CourierRoute = { id: generateId(), name: driverName, orders: [orderToAdd], startLat: storeLat, startLng: storeLng, createdAt: new Date().toISOString() };
       return [...prev, newRoute];
     });
     setNoContactOrders(prev => prev.filter(x => x.id !== nc.id));
@@ -628,7 +666,8 @@ const Index = () => {
       const order = route?.orders.find(o => o.id === orderId);
       if (route && order) {
         const distKm = haversineKm(storeLat, storeLng, order.lat || storeLat, order.lng || storeLng) * 2;
-        supabase.from("confirmed_orders").insert({
+        // upsert prevents duplicate rows if iFood also concludes the order via event polling
+        supabase.from("confirmed_orders").upsert({
           ifood_order_id: order.id,
           customer_name: order.customerName,
           customer_address: order.address,
@@ -638,9 +677,10 @@ const Index = () => {
           order_total_cents: order.total,
           delivery_lat: order.lat || storeLat,
           delivery_lng: order.lng || storeLng,
-        }).then(() => {});
+        }, { onConflict: "ifood_order_id" }).then(() => {});
+        // Delete from pending_orders — order is confirmed, no longer pending
         supabase.from("pending_orders")
-          .update({ status: "COMPLETED" })
+          .delete()
           .eq("id", order.id)
           .then(() => {});
       }
@@ -683,7 +723,7 @@ const Index = () => {
         return updated;
       } else {
         const newRoute = {
-          id: crypto.randomUUID(),
+          id: generateId(),
           name: driver.name,
           orders: [order],
           startLat,
@@ -720,7 +760,7 @@ const Index = () => {
         updated[destIdx] = { ...updated[destIdx], orders: [...updated[destIdx].orders, order] };
         return updated;
       }
-      return [...withoutOrder, { id: crypto.randomUUID(), name: toDriver, orders: [order], createdAt: new Date().toISOString() }];
+      return [...withoutOrder, { id: generateId(), name: toDriver, orders: [order], createdAt: new Date().toISOString() }];
     });
     toast.success(`Pedido reatribuído para ${toDriver}.`);
   };
@@ -883,7 +923,7 @@ const Index = () => {
                           updated[idx] = { ...updated[idx], orders: [...updated[idx].orders, orderToAdd] };
                           return updated;
                         }
-                        return [...prev, { id: crypto.randomUUID(), name: driverName, orders: [orderToAdd], startLat: storeLat, startLng: storeLng, createdAt: new Date().toISOString() }];
+                        return [...prev, { id: generateId(), name: driverName, orders: [orderToAdd], startLat: storeLat, startLng: storeLng, createdAt: new Date().toISOString() }];
                       });
                       setNoContactOrders(prev => prev.filter(x => x.id !== nc.id));
                       toast.success(`Pedido #${nc.order_data.displayId} reatribuído para ${driverName}.`);
