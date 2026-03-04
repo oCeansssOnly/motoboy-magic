@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { X, AlertTriangle } from "lucide-react";
 import { CourierRoute } from "@/lib/types";
+import { haptic } from "@/lib/utils";
 
 const HOLD_DURATION_MS = 3000;
 
@@ -21,15 +22,26 @@ export function EndRouteModal({ route, onCancel, onConfirm, cancelling }: EndRou
 
   const startHold = useCallback(() => {
     if (confirmed || cancelling) return;
+    haptic(); // Vibration on start
     startTimeRef.current = Date.now() - (progress / 100) * HOLD_DURATION_MS;
+    
     timerRef.current = setInterval(() => {
       const elapsed = Date.now() - (startTimeRef.current ?? Date.now());
       const pct = Math.min((elapsed / HOLD_DURATION_MS) * 100, 100);
       setProgress(pct);
+      
+      // Add subtle progression haptics at 50% and 75%
+      if (Math.round(pct) === 50 || Math.round(pct) === 75) {
+        haptic();
+      }
+
       if (pct >= 100) {
         clearInterval(timerRef.current!);
         timerRef.current = null;
         setConfirmed(true);
+        // Strong completion haptic
+        if (navigator.vibrate) navigator.vibrate([50, 50, 50]);
+        else haptic();
         setTimeout(onConfirm, 300);
       }
     }, 16);

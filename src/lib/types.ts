@@ -8,6 +8,7 @@ export interface IFoodOrder {
   lat: number;
   lng: number;
   total: number;
+  deliveryFee?: number;
   paymentMethod: string;
   items: string;
   status: string;

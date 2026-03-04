@@ -16,25 +16,19 @@ export interface TransferRequest {
 interface UseTransferRequestsOptions {
   myName: string | null;
   onOrderApproved: (order: IFoodOrder, startLat: number, startLng: number) => void;
+  /** Called on the APPROVER's side so they remove the transferred order from their own route */
+  onOrderTransferred?: (orderId: string) => void;
   storeLat: number;
   storeLng: number;
 }
 
-function requestNotificationPermission() {
-  if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
-    Notification.requestPermission();
-  }
-}
-
-function sendBrowserNotification(title: string, body: string, tag: string) {
-  if (typeof window === "undefined" || !("Notification" in window) || Notification.permission !== "granted") return;
-  const n = new Notification(title, { body, tag, icon: "/favicon.ico", requireInteraction: true });
-  n.onclick = () => { window.focus(); n.close(); };
-}
+// System push notifications are now handled natively inside useNotifications.ts
 
 export function useTransferRequests({
-  myName, onOrderApproved, storeLat, storeLng,
-}: UseTransferRequestsOptions) {
+  myName, onOrderApproved, onOrderTransferred, storeLat, storeLng, addNotification
+}: UseTransferRequestsOptions & { addNotification: (type: any, title: string, message: string) => void }) {
+  const onOrderTransferredRef = useRef(onOrderTransferred);
+  useEffect(() => { onOrderTransferredRef.current = onOrderTransferred; }, [onOrderTransferred]);
   const [incomingRequest, setIncomingRequest] = useState<TransferRequest | null>(null);
   const [outgoingPending, setOutgoingPending] = useState<Set<string>>(new Set());
   const [pendingNotifications, setPendingNotifications] = useState<TransferRequest[]>([]);
@@ -45,8 +39,6 @@ export function useTransferRequests({
   const storeLatRef = useRef(storeLat);
   const storeLngRef = useRef(storeLng);
   useEffect(() => { storeLatRef.current = storeLat; storeLngRef.current = storeLng; }, [storeLat, storeLng]);
-
-  useEffect(() => { requestNotificationPermission(); }, []);
 
   const appliedRef = useRef<Set<string>>(new Set());
 
@@ -65,10 +57,10 @@ export function useTransferRequests({
 
     onOrderApprovedRef.current({ ...row.order_data, confirmed: false }, lat, lng);
     setOutgoingPending(prev => { const n = new Set(prev); n.delete(row.order_id); return n; });
-    // Fire-and-forget — mark completed in DB
-    supabase.from("transfer_requests").update({ status: "completed" }).eq("id", row.id).then(() => {});
-    sendBrowserNotification("✅ Transferência aprovada!", `Pedido #${row.order_data?.displayId} está na sua rota.`, `approved-${row.id}`);
-  }, []);
+    // Delete the request row — no longer needed (keeps transfer_requests clean)
+    supabase.from("transfer_requests").delete().eq("id", row.id).then(() => {});
+    addNotification("success", "Transferência aprovada!", `Pedido #${row.order_data?.displayId} está na sua rota.`);
+  }, [addNotification]);
 
   // Fallback: fetch from DB (for polling when no Realtime event)
   const fetchAndApply = useCallback(async (rowId: string) => {
@@ -91,10 +83,10 @@ export function useTransferRequests({
       data.forEach(r => handledRef.current.add(r.id));
       setPendingNotifications(data as unknown as TransferRequest[]);
       setIncomingRequest(data[0] as unknown as TransferRequest);
-      data.forEach(r => sendBrowserNotification(
-        "🛵 Solicitação de Transferência (pendente)",
-        `${r.requester_name} quer o pedido #${(r.order_data as any)?.displayId}`,
-        `xfer-${r.id}`
+      data.forEach(r => addNotification(
+        "info", 
+        "Transferência pendente",
+        `${r.requester_name} quer o pedido #${(r.order_data as any)?.displayId}`
       ));
     })();
 
@@ -121,10 +113,10 @@ export function useTransferRequests({
 
         setIncomingRequest(prev => prev ?? req);
         setPendingNotifications(prev => [...prev, req]);
-        sendBrowserNotification(
-          "🛵 Solicitação de Transferência",
-          `${req.requester_name} quer o pedido #${req.order_data?.displayId}`,
-          `transfer-${req.id}`
+        addNotification(
+          "info", 
+          "Solicitação de Transferência",
+          `${req.requester_name} quer transferir o pedido #${req.order_data?.displayId} para a rota dele.`
         );
         toast.info(`🛵 ${req.requester_name} quer transferir um pedido!`, {
           duration: 10000,
@@ -182,16 +174,19 @@ export function useTransferRequests({
   const approveIncoming = useCallback(async () => {
     if (!incomingRequest) return;
 
-    // 1. Update DB
+    // 1. Remove the order from the approver's own route immediately
+    onOrderTransferredRef.current?.(incomingRequest.order_id);
+
+    // 2. Update DB
     await supabase.from("transfer_requests").update({ status: "approved" }).eq("id", incomingRequest.id);
 
-    // 2. Broadcast instant notification — bypasses RLS, arrives in ~50ms
+    // 3. Broadcast instant notification — bypasses RLS, arrives in ~50ms
     const approvedRow: TransferRequest = { ...incomingRequest, status: "approved" };
     supabase
       .channel(`approval-for-${encodeURIComponent(incomingRequest.requester_name)}`)
       .send({ type: "broadcast", event: "transfer_approved", payload: approvedRow });
 
-    // 3. Advance to next pending notification
+    // 4. Advance to next pending notification
     setPendingNotifications(prev => {
       const rest = prev.filter(r => r.id !== incomingRequest.id);
       setIncomingRequest(rest[0] ?? null);
@@ -201,7 +196,8 @@ export function useTransferRequests({
 
   const rejectIncoming = useCallback(async () => {
     if (!incomingRequest) return;
-    await supabase.from("transfer_requests").update({ status: "rejected" }).eq("id", incomingRequest.id);
+    // Delete the row outright — keeps transfer_requests clean
+    await supabase.from("transfer_requests").delete().eq("id", incomingRequest.id);
     setPendingNotifications(prev => {
       const rest = prev.filter(r => r.id !== incomingRequest.id);
       setIncomingRequest(rest[0] ?? null);

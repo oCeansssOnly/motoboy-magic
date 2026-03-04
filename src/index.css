@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -6,56 +6,64 @@
 
 @layer base {
   :root {
-    --background: 220 20% 10%;
-    --foreground: 150 10% 92%;
+    /* Apple Dark Mode iOS Palette */
+    --background: 0 0% 0%;       /* True black for OLED feel */
+    --foreground: 0 0% 100%;     /* White text */
 
-    --card: 220 18% 13%;
-    --card-foreground: 150 10% 92%;
+    --card: 240 4% 10%;          /* Secondary system background (dark gray) */
+    --card-foreground: 0 0% 100%;
 
-    --popover: 220 18% 13%;
-    --popover-foreground: 150 10% 92%;
+    --popover: 240 4% 16%;       /* Elevated surfaces */
+    --popover-foreground: 0 0% 100%;
 
-    --primary: 145 72% 50%;
-    --primary-foreground: 220 20% 6%;
+    /* iOS System Blue */
+    --primary: 211 100% 50%;
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 220 16% 18%;
-    --secondary-foreground: 150 10% 85%;
+    /* iOS System Gray 5/6 */
+    --secondary: 240 5% 16%;
+    --secondary-foreground: 0 0% 100%;
 
-    --muted: 220 14% 16%;
-    --muted-foreground: 220 10% 55%;
+    /* iOS Muted Subtitles */
+    --muted: 240 5% 16%;
+    --muted-foreground: 240 5% 65%;
 
-    --accent: 145 50% 22%;
-    --accent-foreground: 145 72% 65%;
+    /* iOS System Green (used for success) */
+    --accent: 135 59% 49%;
+    --accent-foreground: 0 0% 100%;
 
-    --destructive: 0 72% 55%;
-    --destructive-foreground: 0 0% 98%;
+    /* iOS System Red */
+    --destructive: 350 89% 60%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 220 14% 20%;
-    --input: 220 14% 20%;
-    --ring: 145 72% 50%;
+    --border: 0 0% 20%;
+    --input: 240 5% 16%;
+    --ring: 211 100% 50%;
 
-    --radius: 0.75rem;
+    /* Apple uses large, squircle-like radiuses. */
+    --radius: 1.25rem;
 
-    --sidebar-background: 220 18% 11%;
-    --sidebar-foreground: 150 10% 92%;
-    --sidebar-primary: 145 72% 50%;
-    --sidebar-primary-foreground: 220 20% 6%;
-    --sidebar-accent: 220 16% 18%;
-    --sidebar-accent-foreground: 150 10% 85%;
-    --sidebar-border: 220 14% 20%;
-    --sidebar-ring: 145 72% 50%;
+    --sidebar-background: 240 4% 10%;
+    --sidebar-foreground: 0 0% 100%;
+    --sidebar-primary: 211 100% 50%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 5% 16%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 0 0% 20%;
+    --sidebar-ring: 211 100% 50%;
 
-    --success: 145 72% 50%;
-    --warning: 38 92% 55%;
-    --info: 200 80% 55%;
+    --success: 135 59% 49%;
+    --warning: 32 100% 53%;   /* iOS Orange */
+    --info: 211 100% 50%;
 
-    --glass: 220 18% 13% / 0.7;
-    --glass-border: 150 10% 92% / 0.08;
-    --glow-primary: 145 72% 50% / 0.15;
+    /* Stronger blur, less opacity for authentic Apple glass */
+    --glass: 240 4% 10% / 0.55;
+    --glass-border: 0 0% 100% / 0.1;
+    --glow-primary: 211 100% 50% / 0.2;
   }
 
   .dark {
-    /* same as root - dark by default */
+    /* Same, we force dark mode for this app */
   }
 }
 
@@ -66,7 +74,12 @@
 
   body {
     @apply bg-background text-foreground font-sans antialiased;
-    font-family: 'Space Grotesk', system-ui, sans-serif;
+    /* Simulate San Francisco with Inter, but prefer native Apple fonts first */
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Inter", sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+    letter-spacing: -0.015em; /* Tighter tracking characteristic of Apple */
+    /* Enhance font rendering on iOS/macOS */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   code, .font-mono {
@@ -77,36 +90,60 @@
 @layer utilities {
   .glass-card {
     background: hsl(var(--glass));
-    backdrop-filter: blur(16px);
+    /* Deeper blur for iOS Vignette/Vibrancy effect */
+    backdrop-filter: blur(40px) saturate(200%);
+    -webkit-backdrop-filter: blur(40px) saturate(200%);
     border: 1px solid hsl(var(--glass-border));
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  }
+  
+  /* Extremely smooth tab bar container */
+  .glass-nav {
+    background: rgba(20, 20, 20, 0.65);
+    backdrop-filter: blur(50px) saturate(250%);
+    -webkit-backdrop-filter: blur(50px) saturate(250%);
+    border-top: 1px solid rgba(255, 255, 255, 0.15);
   }
 
   .glow-primary {
-    box-shadow: 0 0 30px hsl(var(--glow-primary)), 0 0 60px hsl(var(--glow-primary));
+    box-shadow: 0 0 20px hsl(var(--glow-primary)), 0 0 40px hsl(var(--glow-primary));
   }
 
   .text-gradient-primary {
-    background: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--info)));
+    /* Subtle gradient, Apple doesn't overdo text gradients often, 
+       but when they do it's smooth between primary and indigo */
+    background: linear-gradient(135deg, hsl(var(--primary)), #5E5CE6);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
   }
 
   @keyframes slide-up {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
+    from { opacity: 0; transform: translateY(12px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
   }
 
   .animate-slide-up {
-    animation: slide-up 0.3s ease-out forwards;
+    /* Apple uses ease-out bounds (cubic-bezier) */
+    animation: slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   }
 
   @keyframes pulse-glow {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.8; transform: scale(0.98); }
   }
 
   .animate-pulse-glow {
-    animation: pulse-glow 2s ease-in-out infinite;
+    animation: pulse-glow 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+
+  /* iOS Button interaction (squish on active) */
+  .ios-btn {
+    transition: transform 0.15s cubic-bezier(0.2, 0, 0, 1), background-color 0.15s ease, opacity 0.15s ease;
+  }
+  
+  .ios-btn:active {
+    transform: scale(0.96);
+    opacity: 0.85;
   }
 }

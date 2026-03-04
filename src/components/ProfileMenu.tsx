@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { LogOut, LayoutDashboard, Bike, ChevronDown, Shield, TrendingUp } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useDriverEmojis } from "@/hooks/useDriverEmojis";
+import { AppleEmoji } from "@/components/AppleEmoji";
 
 function getMonthStart() {
   const d = new Date();
@@ -25,7 +27,8 @@ export function ProfileMenu() {
   }, []);
 
   const displayName = driver?.name || user?.email?.split("@")[0] || "Usuário";
-  const initials = displayName.slice(0, 2).toUpperCase();
+  const driverEmojis = useDriverEmojis();
+  const emojiName = driverEmojis[displayName] || (isAdmin ? "👨‍💻" : "🏍️");
 
   const handleSignOut = async () => {
     setOpen(false);
@@ -39,10 +42,10 @@ export function ProfileMenu() {
         onClick={() => setOpen(o => !o)}
         className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-secondary/60 hover:bg-secondary border border-border/50 transition-all"
       >
-        <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-[11px] font-bold flex-shrink-0 ${
-          isAdmin ? "bg-primary text-primary-foreground" : "bg-primary/15 text-primary"
+        <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 relative overflow-hidden ${
+          isAdmin ? "bg-primary text-primary-foreground" : "bg-primary/20 text-primary"
         }`}>
-          {initials}
+          <AppleEmoji name={emojiName} size={20} />
         </div>
         <span className="text-sm font-medium text-foreground hidden sm:block max-w-[100px] truncate">
           {displayName}
@@ -59,10 +62,10 @@ export function ProfileMenu() {
           {/* User info */}
           <div className="px-4 py-3 border-b border-border">
             <div className="flex items-center gap-3">
-              <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0 ${
-                isAdmin ? "bg-primary text-primary-foreground" : "bg-primary/15 text-primary"
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 relative overflow-hidden ${
+                isAdmin ? "bg-primary text-primary-foreground" : "bg-primary/20 text-primary"
               }`}>
-                {initials}
+                <AppleEmoji name={emojiName} size={26} />
               </div>
               <div className="min-w-0">
                 <p className="font-semibold text-foreground text-sm truncate">{displayName}</p>

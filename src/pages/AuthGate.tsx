@@ -3,6 +3,8 @@ import { Bike, Mail, Lock, Loader2, Eye, EyeOff, User, Clock, ShieldAlert } from
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
+import EmojiPicker, { Theme } from "emoji-picker-react";
+import { haptic } from "@/lib/utils";
 
 type AuthView = "signin" | "signup" | "check_email";
 
@@ -13,7 +15,10 @@ export function AuthGate() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
+  const [selectedEmoji, setSelectedEmoji] = useState("😎");
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [loading, setLoading] = useState(false);
+
   // Local flag: set immediately after signup so we show pending screen
   // without waiting for AuthContext to re-fetch (avoids race condition)
   const [justSignedUp, setJustSignedUp] = useState(false);
@@ -92,9 +97,10 @@ export function AuthGate() {
       }
 
       // 2. Create the drivers profile row (pending)
+      // We will store the chosen emoji inside the generic "notes" string column
       const { data: driverRow, error: driverErr } = await supabase
         .from("drivers")
-        .insert({ name: name.trim(), status: "pending" })
+        .insert({ name: name.trim(), status: "pending", notes: selectedEmoji })
         .select("id")
         .single();
       if (driverErr) console.error("driver insert:", driverErr);
@@ -157,20 +163,48 @@ export function AuthGate() {
 
           <form onSubmit={view === "signin" ? handleSignIn : handleSignUp} className="space-y-3">
             {view === "signup" && (
-              <div>
-                <label className="text-xs text-muted-foreground block mb-1">Nome completo *</label>
-                <div className="relative">
-                  <User size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={e => setName(e.target.value)}
-                    required
-                    placeholder="Seu nome"
-                    className="w-full bg-input border border-border rounded-lg pl-9 pr-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  />
+              <>
+                <div className="flex flex-col items-center justify-center relative">
+                  <label className="text-xs text-muted-foreground block mb-2 font-medium">Avatar de Perfil</label>
+                  <button
+                    type="button"
+                    onClick={() => { haptic(); setShowEmojiPicker(!showEmojiPicker); }}
+                    className="w-20 h-20 rounded-full bg-secondary/50 flex items-center justify-center text-4xl shadow-inner border border-border transition-transform hover:scale-105 active:scale-95 z-10"
+                  >
+                    {selectedEmoji}
+                  </button>
+                  {showEmojiPicker && (
+                    <div className="absolute top-24 z-[100] animate-slide-up shadow-2xl rounded-2xl overflow-hidden border border-border">
+                      <EmojiPicker 
+                        theme={Theme.DARK} 
+                        onEmojiClick={(e) => { 
+                          haptic(); 
+                          setSelectedEmoji(e.emoji); 
+                          setShowEmojiPicker(false); 
+                        }} 
+                        searchDisabled
+                        skinTonesDisabled
+                        width={300}
+                        height={400}
+                      />
+                    </div>
+                  )}
                 </div>
-              </div>
+                <div>
+                  <label className="text-xs text-muted-foreground block mb-1">Nome completo *</label>
+                  <div className="relative">
+                    <User size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                    <input
+                      type="text"
+                      value={name}
+                      onChange={e => setName(e.target.value)}
+                      required
+                      placeholder="Seu nome"
+                      className="w-full bg-input border border-border rounded-lg pl-9 pr-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    />
+                  </div>
+                </div>
+              </>
             )}
             <div>
               <label className="text-xs text-muted-foreground block mb-1">E-mail</label>
@@ -201,8 +235,8 @@ export function AuthGate() {
                 />
                 <button
                   type="button"
-                  onClick={() => setShowPw(p => !p)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  onClick={() => { haptic(); setShowPw(p => !p); }}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground ios-btn"
                 >
                   {showPw ? <EyeOff size={14} /> : <Eye size={14} />}
                 </button>
@@ -212,10 +246,11 @@ export function AuthGate() {
             <button
               type="submit"
               disabled={loading || !email || password.length < 6 || (view === "signup" && !name.trim())}
-              className="w-full py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-all disabled:opacity-40 flex items-center justify-center gap-2 mt-1"
+              onClick={() => haptic(30)}
+              className="w-full py-3 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 flex items-center justify-center gap-2 mt-2 ios-btn shadow-lg glow-primary"
             >
               {loading
-                ? <><Loader2 size={15} className="animate-spin" /> Aguarde...</>
+                ? <><Loader2 size={16} className="animate-spin" /> Conectando...</>
                 : view === "signin" ? "Entrar" : "Criar Conta"}
             </button>
           </form>

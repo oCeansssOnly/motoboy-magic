@@ -6,6 +6,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
+import { useDriverEmojis } from "@/hooks/useDriverEmojis";
+import { AppleEmoji } from "@/components/AppleEmoji";
 
 interface Driver {
   id: string;
@@ -48,6 +50,7 @@ export default function Drivers() {
   const [orders, setOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<"pending" | "active" | "inactive">("pending");
+  const driverEmojis = useDriverEmojis();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -180,12 +183,20 @@ export default function Drivers() {
               {/* Top row */}
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0 ${
-                    driver.status === "active" ? "bg-primary/15 text-primary" :
-                    driver.status === "pending" ? "bg-amber-500/15 text-amber-400" :
-                    "bg-secondary text-muted-foreground"
+                  <div className={`w-12 h-12 rounded-[1rem] flex items-center justify-center font-bold text-sm flex-shrink-0 overflow-hidden shadow-inner ${
+                    driver.status === "active" ? "bg-primary/20" :
+                    driver.status === "pending" ? "bg-amber-500/20" :
+                    "bg-secondary"
                   }`}>
-                    {driver.name.slice(0, 2).toUpperCase()}
+                    {driverEmojis[driver.name] ? (
+                      <AppleEmoji name={driverEmojis[driver.name]} size={30} />
+                    ) : (
+                      <span className={
+                        driver.status === "active" ? "text-primary" :
+                        driver.status === "pending" ? "text-amber-400" :
+                        "text-muted-foreground"
+                      }>{driver.name.slice(0, 2).toUpperCase()}</span>
+                    )}
                   </div>
                   <div>
                     <p className="font-semibold text-foreground">{driver.name}</p>
@@ -226,57 +237,63 @@ export default function Drivers() {
                 </div>
               )}
 
-              {/* Actions */}
-              <div className="flex gap-2 pt-1">
-                {driver.status === "pending" && (
-                  <>
-                    <button
-                      onClick={() => updateStatus(driver.id, "active")}
-                      className="flex-1 py-2 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 transition-all flex items-center justify-center gap-1.5"
-                    >
-                      <Check size={13} /> Aprovar
-                    </button>
-                    <button
-                      onClick={() => remove(driver.id, driver.name)}
-                      className="px-3 py-2 rounded-lg bg-destructive/15 text-destructive text-xs font-medium hover:bg-destructive/25 transition-all flex items-center gap-1.5"
-                    >
-                      <X size={13} /> Recusar
-                    </button>
-                  </>
-                )}
-                {driver.status === "active" && (
-                  <>
-                    <button
-                      onClick={() => updateStatus(driver.id, "inactive")}
-                      className="flex-1 py-2 rounded-lg bg-secondary text-secondary-foreground text-xs font-medium hover:bg-secondary/80 transition-all border border-border flex items-center justify-center gap-1.5"
-                    >
-                      <UserX size={13} /> Desativar
-                    </button>
-                    <button
-                      onClick={() => remove(driver.id, driver.name)}
-                      className="px-3 py-2 rounded-lg bg-destructive/15 text-destructive text-xs hover:bg-destructive/25 transition-all flex items-center gap-1"
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  </>
-                )}
-                {driver.status === "inactive" && (
-                  <>
-                    <button
-                      onClick={() => updateStatus(driver.id, "active")}
-                      className="flex-1 py-2 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 transition-all flex items-center justify-center gap-1.5"
-                    >
-                      <UserCheck size={13} /> Reativar
-                    </button>
-                    <button
-                      onClick={() => remove(driver.id, driver.name)}
-                      className="px-3 py-2 rounded-lg bg-destructive/15 text-destructive text-xs hover:bg-destructive/25 transition-all flex items-center gap-1"
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  </>
-                )}
-              </div>
+            {/* Actions */}
+            <div className="flex gap-2 pt-1">
+              {driver.status === "pending" && (
+                <>
+                  <button
+                    onClick={() => updateStatus(driver.id, "active")}
+                    className="flex-1 py-2 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 transition-all flex items-center justify-center gap-1.5"
+                  >
+                    <Check size={13} /> Aprovar
+                  </button>
+                  <button
+                    onClick={() => remove(driver.id, driver.name)}
+                    className="px-3 py-2 rounded-lg bg-destructive/15 text-destructive text-xs font-medium hover:bg-destructive/25 transition-all flex items-center gap-1.5"
+                  >
+                    <X size={13} /> Recusar
+                  </button>
+                </>
+              )}
+              {driver.status === "active" && (
+                <>
+                  <button
+                    onClick={() => navigate(`/admin/motorista/${driver.id}`)}
+                    className="flex-1 py-2 rounded-lg bg-primary/10 text-primary text-xs font-semibold hover:bg-primary/20 transition-all flex items-center justify-center gap-1.5"
+                  >
+                    <User size={13} /> Perfil
+                  </button>
+                  <button
+                    onClick={() => updateStatus(driver.id, "inactive")}
+                    className="flex-1 py-2 rounded-lg bg-secondary text-secondary-foreground text-xs font-medium hover:bg-secondary/80 transition-all border border-border flex items-center justify-center gap-1.5"
+                  >
+                    <UserX size={13} /> Desativar
+                  </button>
+                  <button
+                    onClick={() => remove(driver.id, driver.name)}
+                    className="px-3 py-2 rounded-lg bg-destructive/15 text-destructive text-xs hover:bg-destructive/25 transition-all flex items-center gap-1"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </>
+              )}
+              {driver.status === "inactive" && (
+                <>
+                  <button
+                    onClick={() => updateStatus(driver.id, "active")}
+                    className="flex-1 py-2 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 transition-all flex items-center justify-center gap-1.5"
+                  >
+                    <UserCheck size={13} /> Reativar
+                  </button>
+                  <button
+                    onClick={() => remove(driver.id, driver.name)}
+                    className="px-3 py-2 rounded-lg bg-destructive/15 text-destructive text-xs hover:bg-destructive/25 transition-all flex items-center gap-1"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </>
+              )}
+            </div>
             </div>
           );
         })}

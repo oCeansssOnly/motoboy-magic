@@ -1,24 +1,32 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { OrderCard } from "@/components/OrderCard";
-import { IFoodSetup } from "@/components/IFoodSetup";
+import { useNotifications } from "@/hooks/useNotifications";
+import { NotificationCenter } from "@/components/NotificationCenter";
+import { RankingTab } from "@/components/RankingTab";
 import { CourierTab } from "@/components/CourierTab";
 import { AssignCourierModal } from "@/components/AssignCourierModal";
 import { AuthGate } from "@/pages/AuthGate";
 import { ProfileMenu } from "@/components/ProfileMenu";
 import { HoldTransferModal } from "@/components/HoldTransferModal";
+import { OrderCard } from "@/components/OrderCard";
+import { IFoodSetup } from "@/components/IFoodSetup";
+import { TrackingMap } from "@/components/TrackingMap";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTransferRequests } from "@/hooks/useTransferRequests";
 import { useDriverLocation } from "@/hooks/useDriverLocation";
+import { useDriverEmojis } from "@/hooks/useDriverEmojis";
+import { AppleEmoji } from "@/components/AppleEmoji";
 import { IFoodOrder, CourierRoute, NoContactOrder, optimizeRoute, generateGoogleMapsUrl } from "@/lib/types";
 import {
   Navigation, RefreshCw, Route, MapPin, Copy, Check, Loader2, Package,
   AlertCircle, Bike, Radio, Store, Edit2, Check as CheckIcon, X, UserX, RotateCcw,
+  FlaskConical, PackagePlus, Trash2, ChevronRight, Trophy, Bell
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
+import { haptic } from "@/lib/utils";
 
-const POLL_INTERVAL = 30_000;
+const POLL_INTERVAL = 15_000; // 15s — faster detection of iFood status changes
 const LS_ROUTES_KEY = "courier_routes_v1";
 const LS_STORE_KEY = "store_coords_v1";
 const LS_DISMISSED_KEY = "dismissed_order_ids_v1";
@@ -80,15 +88,69 @@ const Index = () => {
   const [driverStats, setDriverStats] = useState({ total: 0, thisMonth: 0 });
   const [orders, setOrders] = useState<IFoodOrder[]>([]);
   const [courierRoutes, setCourierRoutes] = useState<CourierRoute[]>(loadRoutesFromStorage);
+  const driverEmojis = useDriverEmojis();
+  // Ref always mirrors courierRoutes so async callbacks read current state without stale closures
+  const courierRoutesRef = useRef<CourierRoute[]>(courierRoutes);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<"queue" | string>("queue"); // "queue" | routeId
+  const [showNotifications, setShowNotifications] = useState(false);
+  const { notifications, addNotification, unreadCount } = useNotifications();
+  
+  // Fallback to "queue" if active route ceases to exist
+  useEffect(() => {
+    if (activeTab !== "queue" && activeTab !== "retentativas" && activeTab !== "map" && activeTab !== "dev_panel" && activeTab !== "ranking") {
+      // Allow dynamic route IDs or a special "minha_rota" flag
+      if (!courierRoutes.some(r => r.id === activeTab) && activeTab !== "minha_rota") {
+        setActiveTab("queue");
+      }
+    }
+  }, [activeTab, courierRoutes]);
+
   const [showAssignModal, setShowAssignModal] = useState(false);
-  // Track order IDs that have been assigned to a motoboy so they never
-  // re-appear in the main queue when iFood emits subsequent events for them.
   const [dismissedOrderIds, setDismissedOrderIds] = useState<Set<string>>(loadDismissedIds);
   // Ref mirrors the state so mergeOrders can read the CURRENT dismissed set
   // without stale-closure or nested-setState issues.
   const dismissedIdsRef = useRef<Set<string>>(dismissedOrderIds);
+
+  const [needsAuth, setNeedsAuth] = useState(false);
+  const [checkingAuth, setCheckingAuth] = useState(true);
+
+  // Synchronize dismissed IDs globally to fix bug where orders reappeared
+  useEffect(() => {
+    if (needsAuth || checkingAuth) return;
+    const fetchGlobalDismissed = async () => {
+      try {
+        const queryLimitDate = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+        
+        // Fetch confirmed orders
+        const { data: confirmed } = await supabase
+          .from("confirmed_orders")
+          .select("ifood_order_id")
+          .gte("created_at", queryLimitDate);
+          
+        // Fetch cancelled/concluded events
+        const { data: events } = await supabase
+          .from("order_status_events")
+          .select("order_id")
+          .in("status", ["concluded", "cancelled"])
+          .gte("created_at", queryLimitDate);
+          
+        const globalDismissed = new Set(dismissedIdsRef.current);
+        if (confirmed) confirmed.forEach(c => c.ifood_order_id && globalDismissed.add(c.ifood_order_id));
+        if (events) events.forEach(e => e.order_id && globalDismissed.add(e.order_id));
+        
+        dismissedIdsRef.current = globalDismissed;
+        setDismissedOrderIds(globalDismissed);
+        saveDismissedIds(globalDismissed);
+        
+        // Prune any existing state orders that were fetched before this synced
+        setOrders(prev => prev.filter(o => !globalDismissed.has(o.id)));
+      } catch (err) {
+        console.error("Error syncing global dismissed orders:", err);
+      }
+    };
+    fetchGlobalDismissed();
+  }, [needsAuth, checkingAuth]);
 
   const [assigning, setAssigning] = useState(false);
   // No contact orders — fed from Supabase (shared across all clients)
@@ -99,9 +161,69 @@ const Index = () => {
   // Admin-editable store address
   const [editingStoreAddr, setEditingStoreAddr] = useState(false);
   const [storeAddrInput, setStoreAddrInput] = useState("");
+  // Ref to prevent iFood polling from overriding manual dev coordinates
+  const storeLocationOverriddenRef = useRef(false);
+
+  const [isGeneratingTestOrders, setIsGeneratingTestOrders] = useState(false);
+  
+  const handleGenerateTestOrders = async () => {
+    setIsGeneratingTestOrders(true);
+    try {
+      const fakeOrders = Array.from({ length: 3 }).map((_, i) => {
+        // random offset roughly 1km-3km from store
+        const r_lat = (Math.random() - 0.5) * 0.04;
+        const r_lng = (Math.random() - 0.5) * 0.04;
+        const id = "TEST-" + generateId().substring(0, 8).toUpperCase();
+        
+        const order: IFoodOrder = {
+          id,
+          displayId: id,
+          customerName: `Cliente Teste ${Math.floor(Math.random() * 1000)}`,
+          customerPhone: "(00) 00000-0000",
+          address: "Rua Fictícia de Teste, 123 - Centro",
+          lat: storeLat + r_lat,
+          lng: storeLng + r_lng,
+          total: Math.floor(Math.random() * 8000) + 2000,
+          deliveryFee: Math.floor(Math.random() * 500) + 500,
+          paymentMethod: ["ONLINE", "CASH", "PIX"][Math.floor(Math.random() * 3)],
+          items: "1x Item de Teste",
+          status: "DISPATCHED",
+          createdAt: new Date().toISOString(),
+          deliveryCode: "1234"
+        };
+
+        // Mock orders stay purely local to avoid DB constraints and API checks
+        return order;
+      });
+
+      mergeOrders(fakeOrders);
+      toast.success("3 Pedidos teste gerados localmente! Aparecerão na Fila.");
+    } catch (err: any) {
+      toast.error("Erro ao gerar testes localmente: " + (err.message || String(err)));
+    } finally {
+      setIsGeneratingTestOrders(false);
+    }
+  };
+
+  const handleClearTestOrders = async () => {
+    try {
+      await supabase.from("pending_orders").delete().like('id', 'TEST-%');
+      toast.success("Pedidos de teste removidos do banco de dados.");
+    } catch(err) {
+      toast.error("Erro ao limpar testes");
+    }
+  };
+
+  const [backgroundMode, setBackgroundMode] = useState(() => {
+    return localStorage.getItem("background_tracking_v1") === "true";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("background_tracking_v1", String(backgroundMode));
+  }, [backgroundMode]);
 
   // Driver real-time location
-  const { location: driverLocation } = useDriverLocation();
+  const { location: driverLocation } = useDriverLocation(isDriver ? (driver?.name ?? null) : null, backgroundMode);
 
   const [loading, setLoading] = useState(false);
   const [polling, setPolling] = useState(false);
@@ -130,14 +252,20 @@ const Index = () => {
     const currentDriver = driverRef.current;
     if (!currentDriver) return;
     setCourierRoutes(prev => {
-      const destIdx = prev.findIndex(r => r.name.toLowerCase() === currentDriver.name.toLowerCase());
+      // Remove the order from any route that currently holds it (the source route)
+      // so it doesn't show as duplicated while Realtime propagates the change.
+      const withoutOrder = prev.map(r => ({
+        ...r,
+        orders: r.orders.filter(o => o.id !== order.id),
+      }));
+      const destIdx = withoutOrder.findIndex(r => r.name.toLowerCase() === currentDriver.name.toLowerCase());
       let updated: CourierRoute[];
       if (destIdx >= 0) {
-        updated = [...prev];
+        updated = [...withoutOrder];
         updated[destIdx] = { ...updated[destIdx], startLat: gpsLat, startLng: gpsLng, orders: [...updated[destIdx].orders, order] };
       } else {
         const newRoute: CourierRoute = { id: generateId(), name: currentDriver.name, orders: [order], startLat: gpsLat, startLng: gpsLng, createdAt: new Date().toISOString() };
-        updated = [...prev, newRoute];
+        updated = [...withoutOrder, newRoute];
       }
       return cleanupEmptyRoutes(updated);
     });
@@ -152,26 +280,98 @@ const Index = () => {
     toast.success("Pedido transferido com sucesso! Confira sua rota.");
   }, [cleanupEmptyRoutes]); // reads driverRef.current to avoid stale closure
 
-  const { incomingRequest, outgoingPending, requestTransfer, triggerPoll, approveIncoming, rejectIncoming } = useTransferRequests({
+  // Called on the APPROVER's side when they approve a transfer.
+  // Removes the order from their route and writes directly to DB to avoid
+  // the isRemoteRouteUpdateRef race condition in the diff-sync effect.
+  const handleOrderTransferred = useCallback((orderId: string) => {
+    setCourierRoutes(prev => {
+      // Find every route that contains this order (should be exactly one)
+      const sourcesWithOrder = prev.filter(r => r.orders.some(o => o.id === orderId));
+
+      const updated = prev.map(r => ({
+        ...r,
+        orders: r.orders.filter(o => o.id !== orderId),
+      }));
+      const cleaned = cleanupEmptyRoutes(updated);
+
+      // Direct DB write — bypasses diff-sync to avoid race conditions
+      sourcesWithOrder.forEach(source => {
+        const stillExists = cleaned.find(r => r.id === source.id);
+        if (stillExists) {
+          // Route still has other orders — update it in DB
+          (supabase as any).from("courier_routes").update({
+            orders: stillExists.orders,
+            updated_at: new Date().toISOString(),
+          }).eq("id", source.id).then(() => {});
+        } else {
+          // Route is now empty — delete from DB
+          (supabase as any).from("courier_routes").delete().eq("id", source.id).then(() => {});
+        }
+      });
+
+      return cleaned;
+    });
+  }, [cleanupEmptyRoutes]);
+
+  const { incomingRequest, outgoingPending, pendingNotifications, requestTransfer, triggerPoll, approveIncoming, rejectIncoming } = useTransferRequests({
     myName: isDriver ? (driver?.name ?? null) : null,
     onOrderApproved: handleOrderApproved,
+    onOrderTransferred: handleOrderTransferred,
     storeLat,
     storeLng,
+    addNotification,
   });
 
-  const [needsAuth, setNeedsAuth] = useState(false);
-  const [checkingAuth, setCheckingAuth] = useState(true);
-
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Tracks whether the last courierRoutes change came from a Realtime/DB event
+  // (not a local user action), to prevent re-writing received data back to DB.
+  const isRemoteRouteUpdateRef = useRef(false);
+  // Tracks the previous routes array for diff-syncing to DB
+  const prevRoutesRef = useRef<CourierRoute[]>(courierRoutes);
 
   // Persist store coords
   useEffect(() => {
     localStorage.setItem(LS_STORE_KEY, JSON.stringify({ lat: storeLat, lng: storeLng }));
   }, [storeLat, storeLng]);
 
-  // Persist courier routes
+  // Persist courier routes to localStorage AND sync changes to DB (for cross-client Realtime)
   useEffect(() => {
     saveRoutesToStorage(courierRoutes);
+
+    // Skip DB write if the change originated from a Realtime/DB event (avoid feedback loop)
+    if (isRemoteRouteUpdateRef.current) {
+      isRemoteRouteUpdateRef.current = false;
+      prevRoutesRef.current = courierRoutes;
+      return;
+    }
+
+    const prev = prevRoutesRef.current;
+    prevRoutesRef.current = courierRoutes;
+
+    // Upsert routes that are new or changed
+    const toUpsert = courierRoutes.filter(r => {
+      const old = prev.find(p => p.id === r.id);
+      return !old || JSON.stringify(old.orders) !== JSON.stringify(r.orders)
+        || old.startLat !== r.startLat || old.startLng !== r.startLng;
+    });
+    if (toUpsert.length > 0) {
+      supabase.from("courier_routes" as any).upsert(
+        toUpsert.map(r => ({
+          id: r.id, name: r.name, orders: r.orders as any,
+          start_lat: r.startLat ?? null, start_lng: r.startLng ?? null,
+          created_at: r.createdAt, updated_at: new Date().toISOString(),
+        })),
+        { onConflict: "id" }
+      ).then(() => {});
+    }
+
+    // Delete routes that were removed
+    const deletedIds = prev
+      .filter(p => !courierRoutes.some(r => r.id === p.id))
+      .map(p => p.id);
+    deletedIds.forEach(id => {
+      supabase.from("courier_routes" as any).delete().eq("id", id).then(() => {});
+    });
   }, [courierRoutes]);
 
   // Persist dismissed order IDs
@@ -200,7 +400,7 @@ const Index = () => {
     try {
       const { data } = await supabase
         .from("pending_orders")
-        .select("id,display_id,localizador,customer_name,customer_phone,customer_address,lat,lng,total,payment_method,items,status,created_at,delivery_code")
+        .select("id,display_id,localizador,customer_name,customer_phone,customer_address,lat,lng,total,payment_method,items,status,created_at,delivery_code,raw_data")
         .in("status", ["ACCEPTED", "DISPATCHED"])
         .order("received_at", { ascending: true });
 
@@ -216,6 +416,17 @@ const Index = () => {
         lat: r.lat ?? 0,
         lng: r.lng ?? 0,
         total: r.total ?? 0,
+        deliveryFee: (() => {
+          const raw = r.raw_data as any || {};
+          const safeTotal = raw.total || raw.TOTAL || {};
+          const safeDelivery = raw.delivery || raw.DELIVERY || {};
+          const rawFeeNum = Number(safeTotal.deliveryFee || safeTotal.DELIVERYFEE || raw.deliveryFee || raw.DELIVERYFEE || safeDelivery.fee || safeDelivery.FEE || 0);
+          if (rawFeeNum > 0) {
+              return Math.round(rawFeeNum * 100);
+          }
+          const distKm = haversineKm(storeLat, storeLng, r.lat ?? 0, r.lng ?? 0) * 2;
+          return 300 + Math.round(distKm * 150);
+        })(),
         paymentMethod: r.payment_method ?? "ONLINE",
         items: r.items ?? "",
         status: r.status ?? "ACCEPTED",
@@ -311,16 +522,40 @@ const Index = () => {
       freshOrders.forEach((fresh) => {
         if (dismissed.has(fresh.id)) return; // skip assigned/dismissed orders
         if (!existing.has(fresh.id)) {
-          existing.set(fresh.id, { ...fresh, selected: false, confirmed: false, confirmationCode: "" });
+          // Force robust calculation of delivery fee parsing out of raw data
+          // to bypass stale Edge Function code output
+          const raw = fresh.raw as any || {};
+          const safeTotal = raw.total || raw.TOTAL || {};
+          const safeDelivery = raw.delivery || raw.DELIVERY || {};
+          const rawFeeNum = Number(safeTotal.deliveryFee || safeTotal.DELIVERYFEE || raw.deliveryFee || raw.DELIVERYFEE || safeDelivery.fee || safeDelivery.FEE || 0);
+          
+          let parsedFee = fresh.deliveryFee || 0;
+          if (rawFeeNum > 0) {
+              parsedFee = Math.round(rawFeeNum * 100);
+          } else if (!parsedFee || parsedFee === 0) {
+              const currentStoreLat = JSON.parse(localStorage.getItem(LS_STORE_KEY) || "null")?.lat ?? -23.55052;
+              const currentStoreLng = JSON.parse(localStorage.getItem(LS_STORE_KEY) || "null")?.lng ?? -46.63330;
+              const distKm = haversineKm(currentStoreLat, currentStoreLng, fresh.lat ?? 0, fresh.lng ?? 0) * 2;
+              parsedFee = 300 + Math.round(distKm * 150);
+          }
+
+          existing.set(fresh.id, { 
+              ...fresh, 
+              deliveryFee: parsedFee,
+              selected: false, 
+              confirmed: false, 
+              confirmationCode: "" 
+          });
           added++;
         }
       });
       if (added > 0) {
+        addNotification("success", "Novo Pedido na Fila", `🆕 ${added} novo(s) pedido(s) chegaram do iFood!`);
         toast.success(`🆕 ${added} novo(s) pedido(s) chegaram!`, { duration: 5000 });
       }
       return Array.from(existing.values());
     });
-  }, []);
+  }, [addNotification]);
 
   const fetchOrders = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -332,17 +567,20 @@ const Index = () => {
       if (fnError) throw fnError;
       if (data?.orders && Array.isArray(data.orders)) {
         // Always apply store address and coords from iFood (source of truth)
-        if (data.merchantAddress) {
-          setStoreAddress(data.merchantAddress);
-          localStorage.setItem(LS_ADDRESS_KEY, data.merchantAddress);
-          supabase.from("app_settings" as any)
-            .upsert({ key: "store_address", value: data.merchantAddress, updated_at: new Date().toISOString() }, { onConflict: "key" })
-            .then(() => {});
-        }
-        if (data.storeLat && data.storeLng) {
-          setStoreLat(data.storeLat);
-          setStoreLng(data.storeLng);
-          localStorage.setItem(LS_STORE_KEY, JSON.stringify({ lat: data.storeLat, lng: data.storeLng }));
+        // EXCEPT if the Admin is actively overriding them in the Dev Panel.
+        if (!storeLocationOverriddenRef.current) {
+          if (data.merchantAddress) {
+            setStoreAddress(data.merchantAddress);
+            localStorage.setItem(LS_ADDRESS_KEY, data.merchantAddress);
+            supabase.from("app_settings" as any)
+              .upsert({ key: "store_address", value: data.merchantAddress, updated_at: new Date().toISOString() }, { onConflict: "key" })
+              .then(() => {});
+          }
+          if (data.storeLat && data.storeLng) {
+            setStoreLat(data.storeLat);
+            setStoreLng(data.storeLng);
+            localStorage.setItem(LS_STORE_KEY, JSON.stringify({ lat: data.storeLat, lng: data.storeLng }));
+          }
         }
         // Only toast 'orders processed' during non-silent loads (manual refresh)
         mergeOrders(data.orders);
@@ -363,22 +601,30 @@ const Index = () => {
             toFinalize.forEach(async order => {
               const cInfo = concluded.find(c => c.id === order.id)!;
               const distKm = haversineKm(storeLat, storeLng, cInfo.lat || order.lat, cInfo.lng || order.lng) * 2;
+              const deliveryFee = (cInfo as any).deliveryFee || order.deliveryFee || 0;
               // upsert prevents duplicate rows if driver already confirmed before iFood concluded
               await supabase.from("confirmed_orders").upsert({
                 ifood_order_id: order.id, customer_name: order.customerName,
                 customer_address: order.address, motoboy_name: route.name,
                 status: "concluded_by_ifood",
                 distance_km: Math.round(distKm * 10) / 10,
-                order_total_cents: order.total,
+                order_total_cents: deliveryFee,
                 delivery_lat: cInfo.lat || order.lat, delivery_lng: cInfo.lng || order.lng,
               }, { onConflict: "ifood_order_id" });
               // Remove from pending queue — order is done
               supabase.from("pending_orders").delete().eq("id", order.id).then(() => {});
             });
-            // Mark confirmed so they appear greyed-out then route auto-closes
             return { ...route, orders: route.orders.map(o => concluded.some(c => c.id === o.id) ? { ...o, confirmed: true } : o) };
           });
-          return cleanupEmptyRoutes(updated);
+          const cleaned = cleanupEmptyRoutes(updated);
+          // Delete routes that became empty from courier_routes DB
+          const removedRouteIds = prev
+            .filter(r => !cleaned.some(c => c.id === r.id))
+            .map(r => r.id);
+          removedRouteIds.forEach(id =>
+            (supabase as any).from("courier_routes").delete().eq("id", id).then(() => {})
+          );
+          return cleaned;
         });
         toast.info(`${data.concludedOrders.length} pedido(s) finalizado(s) pelo iFood.`, { duration: 6000 });
       }
@@ -394,7 +640,15 @@ const Index = () => {
               cancelledSet.has(o.id) && !o.confirmed ? { ...o, confirmed: true, cancelled: true } : o
             ),
           }));
-          return cleanupEmptyRoutes(updated);
+          const cleaned = cleanupEmptyRoutes(updated);
+          // Delete routes that became empty from courier_routes DB
+          const removedRouteIds = prev
+            .filter(r => !cleaned.some(c => c.id === r.id))
+            .map(r => r.id);
+          removedRouteIds.forEach(id =>
+            (supabase as any).from("courier_routes").delete().eq("id", id).then(() => {})
+          );
+          return cleaned;
         });
         // Not yet assigned: remove from queue + dismiss permanently
         setOrders(prev => prev.filter(o => !cancelledSet.has(o.id)));
@@ -443,14 +697,294 @@ const Index = () => {
     return () => { supabase.removeChannel(channel); };
   }, [needsAuth, checkingAuth]);
 
-  // Initial load + polling (single effect — do NOT duplicate)
+  // ── Realtime: sync pending_orders across all connected clients ──────────────
+  // When any client assigns/confirms an order (deletes from pending_orders),
+  // all other open clients remove it from their queue instantly — no F5 needed.
+  useEffect(() => {
+    if (needsAuth || checkingAuth) return;
+
+    const pendingChannel = supabase
+      .channel("pending-orders-realtime")
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "pending_orders" }, (payload) => {
+        const deletedId = (payload.old as any).id as string;
+        if (!deletedId) return;
+        // Remove from the visible queue
+        setOrders(prev => prev.filter(o => o.id !== deletedId));
+        // Permanently dismiss so it doesn't re-appear from the next poll
+        const next = new Set(dismissedIdsRef.current);
+        next.add(deletedId);
+        dismissedIdsRef.current = next;
+        setDismissedOrderIds(next);
+        saveDismissedIds(next);
+      })
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "pending_orders" }, (payload) => {
+        const row = payload.new as any;
+        if (!row?.id) return;
+        if (dismissedIdsRef.current.has(row.id)) return;
+        const newOrder: IFoodOrder = {
+          id: row.id,
+          displayId: row.display_id ?? row.id.slice(0, 8),
+          localizador: row.localizador ?? "",
+          customerName: row.customer_name ?? "Cliente",
+          customerPhone: row.customer_phone ?? "",
+          address: row.customer_address ?? "Endereço não disponível",
+          lat: row.lat ?? 0,
+          lng: row.lng ?? 0,
+          total: row.total ?? 0,
+          deliveryFee: (() => {
+            const raw = row.raw_data as any || {};
+            const safeTotal = raw.total || raw.TOTAL || {};
+            const safeDelivery = raw.delivery || raw.DELIVERY || {};
+            const rawFeeNum = Number(safeTotal.deliveryFee || safeTotal.DELIVERYFEE || raw.deliveryFee || raw.DELIVERYFEE || safeDelivery.fee || safeDelivery.FEE || 0);
+            if (rawFeeNum > 0) {
+                return Math.round(rawFeeNum * 100);
+            }
+            const distKm = haversineKm(storeLat, storeLng, row.lat ?? 0, row.lng ?? 0) * 2;
+            return 300 + Math.round(distKm * 150);
+          })(),
+          paymentMethod: row.payment_method ?? "ONLINE",
+          items: row.items ?? "",
+          status: row.status ?? "ACCEPTED",
+          createdAt: row.created_at ?? new Date().toISOString(),
+          deliveryCode: row.delivery_code ?? "",
+          selected: false,
+          confirmed: false,
+          confirmationCode: "",
+        };
+        setOrders(prev => {
+          if (prev.some(o => o.id === newOrder.id)) return prev;
+          return [...prev, newOrder];
+        });
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(pendingChannel); };
+  }, [needsAuth, checkingAuth]);
+
+  // ── Load courier routes from DB on mount (new clients see current state) ────
+  useEffect(() => {
+    if (needsAuth || checkingAuth) return;
+    (supabase as any).from("courier_routes").select("*").order("created_at", { ascending: true })
+      .then(({ data }: { data: any[] | null }) => {
+        isRemoteRouteUpdateRef.current = true;
+        if (!data || data.length === 0) {
+          setCourierRoutes([]);
+          saveRoutesToStorage([]);
+          return;
+        }
+        const loaded: CourierRoute[] = data.map((r: any) => ({
+          id: r.id, name: r.name, orders: r.orders || [],
+          startLat: r.start_lat, startLng: r.start_lng, createdAt: r.created_at,
+        }));
+        setCourierRoutes(loaded);
+        saveRoutesToStorage(loaded);
+      });
+  }, [needsAuth, checkingAuth]);
+
+  // ── Realtime: sync courier_routes across all connected clients ──────────────
+  // When any client creates/updates/deletes a route, all others see it instantly.
+  useEffect(() => {
+    if (needsAuth || checkingAuth) return;
+
+    const routesChannel = supabase
+      .channel("courier-routes-realtime")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "courier_routes" }, (payload) => {
+        const r = payload.new as any;
+        isRemoteRouteUpdateRef.current = true;
+        setCourierRoutes(prev => {
+          if (prev.some(x => x.id === r.id)) return prev;
+          return [...prev, { id: r.id, name: r.name, orders: r.orders || [], startLat: r.start_lat, startLng: r.start_lng, createdAt: r.created_at }];
+        });
+      })
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "courier_routes" }, (payload) => {
+        const r = payload.new as any;
+        isRemoteRouteUpdateRef.current = true;
+        setCourierRoutes(prev => {
+          const idx = prev.findIndex(x => x.id === r.id);
+          if (idx < 0) return [...prev, { id: r.id, name: r.name, orders: r.orders || [], startLat: r.start_lat, startLng: r.start_lng, createdAt: r.created_at }];
+          const updated = [...prev];
+          updated[idx] = { ...updated[idx], orders: r.orders || [], startLat: r.start_lat ?? updated[idx].startLat, startLng: r.start_lng ?? updated[idx].startLng };
+          return updated;
+        });
+      })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "courier_routes" }, (payload) => {
+        const id = (payload.old as any).id;
+        isRemoteRouteUpdateRef.current = true;
+        setCourierRoutes(prev => prev.filter(r => r.id !== id));
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(routesChannel); };
+  }, [needsAuth, checkingAuth]);
+
+  // ── Realtime: react to order status events from iFood polling ───────────────
+  // The edge function publishes concluded/cancelled events to order_status_events.
+  // This ensures ALL clients (not just the one that polled) handle status changes
+  // the moment ANY client triggers a poll.
+  useEffect(() => {
+    if (needsAuth || checkingAuth) return;
+    const processedEvents = new Set<string>(); // prevent double-processing on reconnect
+
+    const eventsChannel = supabase
+      .channel("order-status-events-realtime")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "order_status_events" }, (payload) => {
+        const ev = payload.new as any;
+        if (!ev?.order_id || processedEvents.has(ev.id)) return;
+        processedEvents.add(ev.id);
+
+        if (ev.status === "concluded") {
+          // ── Concluded externally by iFood (customer confirmed or auto) ──
+          const cInfo = ev.order_data as any;
+          setCourierRoutes(prev => {
+            const updated = prev.map(route => {
+              const inRoute = route.orders.find(o => o.id === ev.order_id && !o.confirmed);
+              if (!inRoute) return route;
+              // Save to confirmed_orders for driver stats
+              const distKm = haversineKm(storeLat, storeLng, cInfo?.lat || inRoute.lat, cInfo?.lng || inRoute.lng) * 2;
+              supabase.from("confirmed_orders").upsert({
+                ifood_order_id: inRoute.id,
+                customer_name: inRoute.customerName,
+                customer_address: inRoute.address,
+                motoboy_name: route.name,
+                status: "confirmed",
+                distance_km: Math.round(distKm * 10) / 10,
+                order_total_cents: inRoute.deliveryFee || 0,
+                delivery_lat: inRoute.lat || storeLat,
+                delivery_lng: inRoute.lng || storeLng,
+              }, { onConflict: "ifood_order_id" }).then(() => {});
+              supabase.from("pending_orders").delete().eq("id", inRoute.id).then(() => {});
+              return { ...route, orders: route.orders.map(o => o.id === ev.order_id ? { ...o, confirmed: true } : o) };
+            });
+            const cleaned = cleanupEmptyRoutes(updated);
+            // Delete empty routes from DB
+            prev.filter(r => !cleaned.some(c => c.id === r.id))
+              .forEach(r => (supabase as any).from("courier_routes").delete().eq("id", r.id).then(() => {}));
+            return cleaned;
+          });
+          // Also remove from pending queue if not yet assigned
+          setOrders(prev => prev.filter(o => o.id !== ev.order_id));
+          toast.info(`Pedido finalizado pelo iFood.`, { duration: 5000 });
+          addNotification("success", "Pedido Finalizado", `O iFood concluiu automaticamente a entrega do pedido #${ev.order_id.slice(-4)}`);
+
+        } else if (ev.status === "cancelled") {
+          // ── Cancelled by iFood ──
+          setCourierRoutes(prev => {
+            const inAnyRoute = prev.some(r => r.orders.some(o => o.id === ev.order_id));
+            if (!inAnyRoute) return prev; // not in route — handled below via setOrders
+            // Mark with cancelled badge (no stats)
+            const updated = prev.map(r => ({
+              ...r,
+              orders: r.orders.map(o =>
+                o.id === ev.order_id && !o.confirmed ? { ...o, confirmed: true, cancelled: true } : o
+              ),
+            }));
+            const cleaned = cleanupEmptyRoutes(updated);
+            // Delete empty routes from DB
+            prev.filter(r => !cleaned.some(c => c.id === r.id))
+              .forEach(r => (supabase as any).from("courier_routes").delete().eq("id", r.id).then(() => {}));
+            return cleaned;
+          });
+          // Remove from pending queue + dismiss permanently
+          setOrders(prev => prev.filter(o => o.id !== ev.order_id));
+          const nextDismissed = new Set(dismissedIdsRef.current);
+          nextDismissed.add(ev.order_id);
+          dismissedIdsRef.current = nextDismissed;
+          setDismissedOrderIds(nextDismissed);
+          saveDismissedIds(nextDismissed);
+          // Delete from pending_orders DB
+          supabase.from("pending_orders").delete().eq("id", ev.order_id).then(() => {});
+          toast.warning(`Pedido cancelado pelo iFood.`, { duration: 5000 });
+          addNotification("error", "Pedido Cancelado", `O pedido #${ev.order_id.slice(-4)} foi cancelado pelo iFood ou cliente.`);
+        }
+
+        // Delete event after processing (cleanup — no need to keep it)
+        (supabase as any).from("order_status_events").delete().eq("id", ev.id).then(() => {});
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(eventsChannel); };
+  }, [needsAuth, checkingAuth, storeLat, storeLng, cleanupEmptyRoutes]);
+
+  // Keep courierRoutesRef in sync with state
+  useEffect(() => { courierRoutesRef.current = courierRoutes; }, [courierRoutes]);
+
+  // ── Direct status polling for in-route orders ─────────────────────────────
+  // Clean async function — reads from ref, single setCourierRoutes call, no nesting.
+  const checkRouteOrdersStatus = useCallback(async () => {
+    const snapshot = courierRoutesRef.current;
+    
+    // Ignore TEST- orders because they don't exist in iFood API 
+    // and would be mistakenly marked as CONCLUDED.
+    const inRouteOrders = snapshot.flatMap(r =>
+      r.orders.filter(o => !o.confirmed && !o.id.startsWith("TEST-")).map(o => ({ routeId: r.id, routeName: r.name, order: o }))
+    );
+    if (inRouteOrders.length === 0) return;
+    try {
+      const orderIds = inRouteOrders.map(x => x.order.id);
+      const { data, error } = await supabase.functions.invoke("ifood-orders", {
+        body: { action: "check_route_orders", orderIds },
+      });
+      if (error || !data?.results) return;
+      
+      const concluded = new Set();
+      const cancelled = new Set();
+      for (const r of data.results) {
+        if (!r.terminal) continue;
+        if (r.cancelled) cancelled.add(r.id);
+        else concluded.add(r.id);
+      }
+      if (concluded.size === 0 && cancelled.size === 0) return;
+      setCourierRoutes(routes => {
+        const updated = routes.map(route => ({
+          ...route,
+          orders: route.orders.map(o => {
+            if (concluded.has(o.id) && !o.confirmed) {
+              const distKm = haversineKm(storeLat, storeLng, o.lat || storeLat, o.lng || storeLng) * 2;
+              supabase.from("confirmed_orders").upsert({
+                ifood_order_id: o.id, customer_name: o.customerName,
+                customer_address: o.address, motoboy_name: route.name,
+                status: "concluded_by_ifood",
+                distance_km: Math.round(distKm * 10) / 10,
+                order_total_cents: o.deliveryFee || 0,
+                delivery_lat: o.lat || storeLat, delivery_lng: o.lng || storeLng,
+                confirmed_at: new Date().toISOString(),
+              }, { onConflict: "ifood_order_id" }).then(({ error }) => {
+                if (error) console.error("[Index] Error upserting confirmed_order (automatic):", error);
+              });
+              supabase.from("pending_orders").delete().eq("id", o.id).then(() => {});
+              return { ...o, confirmed: true };
+            }
+            if (cancelled.has(o.id) && !o.confirmed) {
+              supabase.from("pending_orders").delete().eq("id", o.id).then(() => {});
+              return { ...o, confirmed: true, cancelled: true };
+            }
+            return o;
+          }),
+        }));
+        const cleaned = cleanupEmptyRoutes(updated);
+        routes.filter(r => !cleaned.some(c => c.id === r.id))
+          .forEach(r => (supabase).from("courier_routes").delete().eq("id", r.id).then(() => {}));
+        if (concluded.size > 0) toast.info(`${concluded.size} pedido(s) finalizado(s) pelo iFood.`, { duration: 5000 });
+        if (cancelled.size > 0) toast.warning(`${cancelled.size} pedido(s) cancelado(s) pelo iFood.`, { duration: 5000 });
+        return cleaned;
+      });
+    } catch { /* silent */ }
+  }, [storeLat, storeLng, cleanupEmptyRoutes]);
+
+  // Initial load + polling
   useEffect(() => {
     if (needsAuth || checkingAuth) return;
     loadPersistedOrders();
     fetchOrders(false);
+    // Main poll: iFood events + new orders (15s)
     pollingRef.current = setInterval(() => fetchOrders(true), POLL_INTERVAL);
-    return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
-  }, [needsAuth, checkingAuth, fetchOrders, loadPersistedOrders]);
+    // Route status poll: check in-route order statuses directly (10s, faster)
+    const routeStatusInterval = setInterval(() => checkRouteOrdersStatus(), 10_000);
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+      clearInterval(routeStatusInterval);
+    };
+  }, [needsAuth, checkingAuth, fetchOrders, loadPersistedOrders, checkRouteOrdersStatus]);
 
   // ── Selection ──
   const toggleSelect = (id: string) => {
@@ -558,6 +1092,7 @@ const Index = () => {
     setAssigning(false);
     if (assignedRouteId) setActiveTab(assignedRouteId);
     toast.success(`${ordersToAssign.length} pedido(s) atribuído(s) para ${courierName}!`);
+    addNotification("info", "Rota Atribuída", `${ordersToAssign.length} pedido(s) despachado(s) para ${courierName}.`);
   };
 
 
@@ -569,7 +1104,7 @@ const Index = () => {
   const handleNoContact = async (routeId: string, order: IFoodOrder) => {
     const callerName = isDriver ? (driver?.name ?? "Admin") : "Admin";
 
-    // ── 1. Optimistic local update first (zero perceived latency) ──
+    // ── 1. Optimistic local update AND DB persistence ──
     setCourierRoutes(prev => {
       const next = prev.map(r =>
         r.id === routeId
@@ -577,7 +1112,17 @@ const Index = () => {
           : r
       );
       const cleaned = cleanupEmptyRoutes(next);
-      if (!cleaned.find(r => r.id === routeId)) {
+      
+      // Persist the modified active route back to DB
+      const activeRoute = cleaned.find(r => r.id === routeId);
+      if (activeRoute) {
+        (supabase as any).from("courier_routes").update({ orders: activeRoute.orders, updated_at: new Date().toISOString() }).eq("id", routeId).then(() => {});
+      } else {
+        // Route became empty, delete it
+        (supabase as any).from("courier_routes").delete().eq("id", routeId).then(() => {});
+      }
+
+      if (!activeRoute) {
         setTimeout(() => setActiveTab("queue"), 0);
       }
       return cleaned;
@@ -635,9 +1180,13 @@ const Index = () => {
       if (destIdx >= 0) {
         const updated = [...prev];
         updated[destIdx] = { ...updated[destIdx], orders: [...updated[destIdx].orders, orderToAdd] };
+        (supabase as any).from("courier_routes").update({ orders: updated[destIdx].orders }).eq("id", updated[destIdx].id).then(() => {});
         return updated;
       }
       const newRoute: CourierRoute = { id: generateId(), name: driverName, orders: [orderToAdd], startLat: storeLat, startLng: storeLng, createdAt: new Date().toISOString() };
+      (supabase as any).from("courier_routes").insert({
+        id: newRoute.id, name: newRoute.name, orders: newRoute.orders, start_lat: newRoute.startLat, start_lng: newRoute.startLng
+      }).then(() => {});
       return [...prev, newRoute];
     });
     setNoContactOrders(prev => prev.filter(x => x.id !== nc.id));
@@ -674,18 +1223,32 @@ const Index = () => {
           motoboy_name: route.name,
           status: "confirmed",
           distance_km: Math.round(distKm * 10) / 10,
-          order_total_cents: order.total,
+          order_total_cents: order.deliveryFee || 0,
           delivery_lat: order.lat || storeLat,
           delivery_lng: order.lng || storeLng,
-        }, { onConflict: "ifood_order_id" }).then(() => {});
+          confirmed_at: new Date().toISOString(),
+        }, { onConflict: "ifood_order_id" }).then(({ error }) => {
+          if (error) console.error("[Index] Error upserting confirmed_order (manual):", error);
+        });
         // Delete from pending_orders — order is confirmed, no longer pending
-        supabase.from("pending_orders")
-          .delete()
-          .eq("id", order.id)
-          .then(() => {});
+        supabase.from("pending_orders").delete().eq("id", order.id).then(() => {});
       }
-      // Auto-close route if all orders are now confirmed
-      return cleanupEmptyRoutes(updated);
+      const cleaned = cleanupEmptyRoutes(updated);
+      // If the route became empty, delete it from courier_routes DB
+      const routeStillExists = cleaned.some(r => r.id === routeId);
+      if (!routeStillExists) {
+        (supabase as any).from("courier_routes").delete().eq("id", routeId).then(() => {});
+      } else {
+        // Route still has orders — update it so others see the confirmed state
+        const updatedRoute = cleaned.find(r => r.id === routeId);
+        if (updatedRoute) {
+          (supabase as any).from("courier_routes").update({
+            orders: updatedRoute.orders,
+            updated_at: new Date().toISOString(),
+          }).eq("id", routeId).then(() => {});
+        }
+      }
+      return cleaned;
     });
   };
 
@@ -734,6 +1297,10 @@ const Index = () => {
       }
     });
 
+    // Delete from pending_orders just in case it was still there
+    supabase.from("pending_orders").delete().eq("id", orderId).then(() => {});
+    setOrders((prev) => prev.filter((o) => o.id !== orderId));
+
     toast.success(`Pedido transferido para você! Rota atualizada.`);
     // Switch to own route tab
     setTimeout(() => {
@@ -762,6 +1329,11 @@ const Index = () => {
       }
       return [...withoutOrder, { id: generateId(), name: toDriver, orders: [order], createdAt: new Date().toISOString() }];
     });
+
+    // Delete from pending_orders just in case it was still there
+    supabase.from("pending_orders").delete().eq("id", orderId).then(() => {});
+    setOrders((prev) => prev.filter((o) => o.id !== orderId));
+    
     toast.success(`Pedido reatribuído para ${toDriver}.`);
   };
 
@@ -772,7 +1344,12 @@ const Index = () => {
   };
 
 
-  const unconfirmedOrders = orders.filter((o) => !o.confirmed);
+  // Gather all order IDs that are currently in any active route
+  const assignedOrderIds = new Set<string>();
+  courierRoutes.forEach(r => r.orders.forEach(o => assignedOrderIds.add(o.id)));
+
+  // Filter queue to show only orders that are NOT confirmed AND NOT assigned to a route
+  const unconfirmedOrders = orders.filter((o) => !o.confirmed && !assignedOrderIds.has(o.id));
   const confirmedOrders = orders.filter((o) => o.confirmed);
   const activeRouteData = courierRoutes.find((r) => r.id === activeTab);
 
@@ -789,83 +1366,41 @@ const Index = () => {
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b border-border sticky top-0 z-40 bg-background/90 backdrop-blur">
-        <div className="container py-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-lg bg-primary/15 flex items-center justify-center glow-primary">
-                <Navigation size={18} className="text-primary" />
-              </div>
-              <div>
-                <h1 className="text-lg font-bold text-foreground">RotaFácil</h1>
-                <div className="flex items-center gap-1.5">
-                  <p className="text-xs text-muted-foreground">iFood • Rota Otimizada</p>
-                  {polling && <Radio size={10} className="text-primary animate-pulse" />}
-                </div>
-              </div>
+    <div className="min-h-screen bg-background flex flex-col">
+      {/* Header - iOS Large Title Style */}
+      <header className={`pt-12 pb-4 px-4 sticky top-0 z-40 bg-background/80 backdrop-blur-xl border-b border-border shadow-sm ${activeTab === 'map' ? 'hidden sm:block' : ''}`}>
+        <div className="container max-w-lg mx-auto">
+          <div className="flex items-end justify-between">
+            <div>
+              <p className="text-[11px] font-semibold tracking-widest text-primary uppercase mb-1">Entregas</p>
+              <h1 className="text-3xl font-extrabold tracking-tight text-foreground -ml-0.5">RouteOS</h1>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 pb-1">
               <button
-                onClick={() => fetchOrders(false)}
+                onClick={() => { haptic(); fetchOrders(false); }}
                 disabled={loading || polling}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all text-sm"
+                className="flex items-center justify-center w-10 h-10 rounded-full bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all ios-btn"
               >
-                {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                Atualizar
+                {loading ? <Loader2 size={18} className="animate-spin text-primary" /> : <RefreshCw size={18} />}
+              </button>
+              <button
+                onClick={() => { haptic(); setShowNotifications(true); }}
+                className="relative flex items-center justify-center w-10 h-10 rounded-full bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all ios-btn"
+              >
+                <Bell size={18} />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white shadow-sm ring-2 ring-background">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
               </button>
               <ProfileMenu />
             </div>
           </div>
         </div>
-
-        {/* Tabs — always visible when authenticated */}
-        {!needsAuth && !checkingAuth && (
-          <div className="container pb-0 overflow-x-auto">
-            <div className="flex gap-1 min-w-max">
-              <button
-                onClick={() => setActiveTab("queue")}
-                className={`px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 transition-all whitespace-nowrap ${activeTab === "queue" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
-              >
-                📋 Fila
-                {unconfirmedOrders.length > 0 && (
-                  <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground text-[10px]">
-                    {unconfirmedOrders.length}
-                  </span>
-                )}
-              </button>
-              {courierRoutes
-                .filter((r) => r.orders.some((o) => !o.confirmed))
-                .map((r) => {
-                const active = r.orders.filter((o) => !o.confirmed).length;
-                return (
-                  <button
-                    key={r.id}
-                    onClick={() => setActiveTab(r.id)}
-                    className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 transition-all whitespace-nowrap ${activeTab === r.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
-                  >
-                    <Bike size={11} /> {r.name}
-                    <span className="px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground text-[10px]">{active}</span>
-                  </button>
-                );
-              })}
-              {/* Retentativas tab */}
-              {noContactOrders.length > 0 && (
-                <button
-                  onClick={() => setActiveTab("retentativas")}
-                  className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 transition-all whitespace-nowrap ${activeTab === "retentativas" ? "border-orange-500 text-orange-400" : "border-transparent text-muted-foreground hover:text-foreground"}`}
-                >
-                  <UserX size={11} /> Retentativas
-                  <span className="px-1.5 py-0.5 rounded-full bg-orange-500 text-white text-[10px]">{noContactOrders.length}</span>
-                </button>
-              )}
-            </div>
-          </div>
-        )}
       </header>
 
-      <main className="container py-5 space-y-4 max-w-lg mx-auto">
+      <main className={`container py-6 pb-40 space-y-6 max-w-lg mx-auto ${activeTab === 'map' ? 'hidden' : ''}`}>
         {/* Auth flow */}
         {checkingAuth && (
           <div className="text-center py-16">
@@ -873,25 +1408,43 @@ const Index = () => {
             <p className="text-sm text-muted-foreground">Verificando autenticação iFood...</p>
           </div>
         )}
-
         {needsAuth && !checkingAuth && (
           <IFoodSetup onAuthenticated={() => { setNeedsAuth(false); }} />
         )}
 
+        {/* ── Driver map view is now outside main ── */}
         {/* ── Courier tab view ── */}
-        {!needsAuth && !checkingAuth && activeTab !== "queue" && activeTab !== "retentativas" && activeRouteData && (
-          <CourierTab
-            route={activeRouteData}
-            storeLat={storeLat}
-            storeLng={storeLng}
-            currentDriverName={isDriver ? driver?.name ?? null : null}
-            isAdmin={isAdmin}
-            outgoingPending={outgoingPending}
-            onOrderConfirmed={handleOrderConfirmed}
-            onNoContact={(routeId, order) => handleNoContact(routeId, order)}
-            onRequestTransfer={(order, ownerName) => { requestTransfer(order, ownerName); triggerPoll(); }}
-            onAdminReassign={(fromRouteId, orderId, toDriver) => handleAdminReassign(fromRouteId, orderId, toDriver)}
-          />
+        {!needsAuth && !checkingAuth && activeTab !== "queue" && activeTab !== "retentativas" && activeTab !== "map" && activeTab !== "dev_panel" && activeTab !== "ranking" && (
+          activeRouteData ? (
+            <CourierTab
+              route={activeRouteData}
+              storeLat={storeLat}
+              storeLng={storeLng}
+              currentDriverName={isDriver ? driver?.name ?? null : null}
+              isAdmin={isAdmin}
+              outgoingPending={outgoingPending}
+              onOrderConfirmed={handleOrderConfirmed}
+              onNoContact={(routeId, order) => handleNoContact(routeId, order)}
+              onRequestTransfer={(order, ownerName) => { requestTransfer(order, ownerName); triggerPoll(); }}
+              onAdminReassign={(fromRouteId, orderId, toDriver) => handleAdminReassign(fromRouteId, orderId, toDriver)}
+            />
+          ) : activeTab === "minha_rota" ? (
+            <div className="text-center py-20 px-4">
+              <div className="w-20 h-20 rounded-3xl bg-primary/10 flex items-center justify-center mx-auto mb-6 shadow-inner">
+                <Bike size={36} className="text-primary opacity-60" />
+              </div>
+              <h2 className="text-xl font-bold text-foreground mb-2">Sem Rotas Ativas</h2>
+              <p className="text-sm text-muted-foreground max-w-xs mx-auto mb-6 leading-relaxed">
+                Você não possui nenhuma rota ou entrega em andamento no momento.
+              </p>
+              <button
+                onClick={() => { haptic(); setActiveTab("queue"); }}
+                className="bg-primary text-primary-foreground font-semibold px-6 py-3 rounded-full hover:bg-primary/90 transition-all ios-btn shadow-lg shadow-primary/20"
+              >
+                Ver Fila de Pedidos
+              </button>
+            </div>
+          ) : null
         )}
 
         {/* ── Retentativas (No-Contact) section ── */}
@@ -921,9 +1474,14 @@ const Index = () => {
                         if (idx >= 0) {
                           const updated = [...prev];
                           updated[idx] = { ...updated[idx], orders: [...updated[idx].orders, orderToAdd] };
+                          (supabase as any).from("courier_routes").update({ orders: updated[idx].orders }).eq("id", updated[idx].id).then(() => {});
                           return updated;
                         }
-                        return [...prev, { id: generateId(), name: driverName, orders: [orderToAdd], startLat: storeLat, startLng: storeLng, createdAt: new Date().toISOString() }];
+                        const newRoute: CourierRoute = { id: generateId(), name: driverName, orders: [orderToAdd], startLat: storeLat, startLng: storeLng, createdAt: new Date().toISOString() };
+                        (supabase as any).from("courier_routes").insert({
+                          id: newRoute.id, name: newRoute.name, orders: newRoute.orders, start_lat: newRoute.startLat, start_lng: newRoute.startLng
+                        }).then(() => {});
+                        return [...prev, newRoute];
                       });
                       setNoContactOrders(prev => prev.filter(x => x.id !== nc.id));
                       toast.success(`Pedido #${nc.order_data.displayId} reatribuído para ${driverName}.`);
@@ -932,6 +1490,57 @@ const Index = () => {
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+
+
+        {/* ── Dev / Test Panel (Admin Only) ── */}
+        {!needsAuth && !checkingAuth && activeTab === "dev_panel" && isAdmin && (
+          <div className="space-y-6 max-w-2xl mx-auto bg-card p-6 rounded-xl border border-border">
+            <div className="flex items-center gap-2 mb-4">
+              <FlaskConical size={20} className="text-purple-500" />
+              <h2 className="font-semibold text-foreground text-lg">Ambiente de Testes</h2>
+            </div>
+            
+            <div className="space-y-4">
+              <h3 className="font-medium text-sm text-foreground">🌍 Localização da Loja (Manual/Coords)</h3>
+              <p className="text-xs text-muted-foreground">Mude a coordenada base da loja para simular as entregas a partir de outro local geográfico exato.</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs text-muted-foreground">Latitude</label>
+                  <input type="number" step="any" value={storeLat} onChange={e => {
+                    const v = parseFloat(e.target.value);
+                    setStoreLat(v);
+                    storeLocationOverriddenRef.current = true;
+                    localStorage.setItem(LS_STORE_KEY, JSON.stringify({ lat: v, lng: storeLng }));
+                  }} className="w-full bg-input text-sm text-foreground rounded-md px-3 py-2 outline-none border border-border focus:border-purple-500 mt-1" />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Longitude</label>
+                  <input type="number" step="any" value={storeLng} onChange={e => {
+                    const v = parseFloat(e.target.value);
+                    setStoreLng(v);
+                    storeLocationOverriddenRef.current = true;
+                    localStorage.setItem(LS_STORE_KEY, JSON.stringify({ lat: storeLat, lng: v }));
+                  }} className="w-full bg-input text-sm text-foreground rounded-md px-3 py-2 outline-none border border-border focus:border-purple-500 mt-1" />
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-4 mt-8 pt-8 border-t border-border">
+              <h3 className="font-medium text-sm text-foreground">📦 Gerador de Pedidos Fictícios</h3>
+              <p className="text-xs text-muted-foreground">Cria 3 pedidos aleatórios num raio de ~2km ao redor das coordenadas atuais da loja para testar as rotas no mapa.</p>
+              <div className="flex flex-wrap gap-3 mt-2">
+                <button onClick={handleGenerateTestOrders} disabled={isGeneratingTestOrders} className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 text-sm disabled:opacity-50 transition-colors">
+                  {isGeneratingTestOrders ? <Loader2 size={16} className="animate-spin" /> : <PackagePlus size={16} />}
+                  Gerar 3 Pedidos Teste
+                </button>
+                <button onClick={handleClearTestOrders} className="bg-red-500/10 text-red-500 hover:bg-red-500/20 px-4 py-2 rounded-lg flex items-center gap-2 text-sm transition-colors">
+                  <Trash2 size={16} /> Limpar Testes
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -979,25 +1588,107 @@ const Index = () => {
 
               {/* Driver current location */}
               {isDriver && (
-                <div className="flex items-center gap-2 border-t border-border/50 pt-2">
-                  <MapPin size={13} className="text-emerald-400 flex-shrink-0 animate-pulse" />
-                  <div className="flex-1 min-w-0">
-                    <span className="text-xs text-foreground font-medium truncate block">
-                      {driverLocation?.address ?? (
-                        <span className="text-muted-foreground italic">Obtendo localização...</span>
-                      )}
-                    </span>
-                    <p className="text-[10px] text-muted-foreground mt-0.5">
-                      Sua localização atual
-                      {driverLocation?.timestamp && (
-                        <> · atualizado às {new Date(driverLocation.timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</>
-                      )}
-                    </p>
+                <div className="flex flex-col gap-2 border-t border-border/50 pt-2">
+                  <div className="flex items-center gap-2">
+                    <MapPin size={13} className="text-emerald-400 flex-shrink-0 animate-pulse" />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-xs text-foreground font-medium truncate block">
+                        {driverLocation?.address ?? (
+                          <span className="text-muted-foreground italic">Obtendo localização...</span>
+                        )}
+                      </span>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">
+                        Sua localização atual
+                        {driverLocation?.timestamp && (
+                          <> · atualizado às {new Date(driverLocation.timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</>
+                        )}
+                      </p>
+                    </div>
                   </div>
+                  
+                  {/* Background tracking toggle */}
+                  <div className="flex items-center justify-between bg-white/5 rounded-lg p-2 mt-1">
+                    <div className="flex items-center gap-2">
+                      <Radio size={12} className={backgroundMode ? "text-emerald-500 animate-pulse" : "text-muted-foreground"} />
+                      <span className="text-[10px] font-bold text-foreground">Modo Background</span>
+                    </div>
+                    <button
+                      onClick={() => { haptic(); setBackgroundMode(!backgroundMode); }}
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
+                        backgroundMode ? 'bg-emerald-500' : 'bg-white/10'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                          backgroundMode ? 'translate-x-[18px]' : 'translate-x-[2px]'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  {backgroundMode && (
+                    <p className="text-[9px] text-emerald-500/80 font-medium px-1">
+                      Mantenha o app aberto (mesmo bloqueado) para garantir o rastreio.
+                    </p>
+                  )}
                 </div>
               )}
             </div>
 
+            {/* ── Retentativas (No Contact) ── */}
+            {noContactOrders.length > 0 && (
+              <button
+                onClick={() => { haptic(); setActiveTab("retentativas"); }}
+                className="w-full glass-card rounded-xl p-4 flex items-center justify-between bg-orange-500/10 border-orange-500/20 active:scale-[0.98] transition-all"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-orange-500/20 flex items-center justify-center text-orange-500">
+                    <UserX size={20} />
+                  </div>
+                  <div className="text-left">
+                    <h2 className="font-bold text-orange-500 text-sm">Retentativas ({noContactOrders.length})</h2>
+                    <p className="text-[11px] text-orange-500/80">Pedidos sem contato com o cliente</p>
+                  </div>
+                </div>
+                <ChevronRight size={18} className="text-orange-500" />
+              </button>
+            )}
+
+            {/* ── Active Routes (Motoboys) ── */}
+            {(() => {
+              const visibleRoutes = courierRoutes.filter(r => 
+                r.orders.some(o => !o.confirmed) && 
+                (!isDriver || r.name.toLowerCase() !== driver?.name.toLowerCase())
+              );
+              
+              if (visibleRoutes.length === 0) return null;
+              
+              return (
+                <div className="space-y-2 mt-4">
+                  <div className="pl-2">
+                    <h2 className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest">Motoboys em Rota</h2>
+                  </div>
+                  <div className="glass-card rounded-2xl overflow-hidden divide-y divide-border/50">
+                    {visibleRoutes.map(r => {
+                      const activeCount = r.orders.filter(o => !o.confirmed).length;
+                      return (
+                        <button key={r.id} onClick={() => { haptic(); setActiveTab(r.id); }} className="w-full flex items-center justify-between p-4 bg-white/5 hover:bg-white/10 active:bg-white/15 transition-colors ios-btn border-none">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-primary/20 flex items-center justify-center shadow-inner overflow-hidden">
+                              {driverEmojis[r.name] ? <AppleEmoji name={driverEmojis[r.name]} size={24} /> : <Bike size={18} className="text-primary" />}
+                            </div>
+                            <div className="text-left">
+                              <p className="font-bold text-foreground text-[15px]">{r.name}</p>
+                              <p className="text-xs text-muted-foreground">{activeCount} pedido(s) a caminho</p>
+                            </div>
+                          </div>
+                          <ChevronRight size={16} className="text-muted-foreground" />
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Error */}
             {error && (
@@ -1052,7 +1743,7 @@ const Index = () => {
                   </button>
                 </div>
 
-                <div className="space-y-3">
+                <div className={`space-y-3 ${selectedOrders.length > 0 ? "pb-40" : ""}`}>
                   {unconfirmedOrders.map((order, i) => (
                     <OrderCard
                       key={order.id}
@@ -1071,8 +1762,8 @@ const Index = () => {
 
             {/* Route / Assign actions */}
             {selectedOrders.length > 0 && (
-              <div className="sticky bottom-4 space-y-2 pt-2">
-                <div className="glass-card rounded-lg p-3 space-y-2">
+              <div className="fixed bottom-28 inset-x-4 z-40 space-y-2 pointer-events-auto">
+                <div className="glass-card rounded-lg p-3 space-y-2 shadow-2xl border border-white/20 bg-background/80 backdrop-blur-xl max-w-md mx-auto relative">
                   <p className="text-xs text-muted-foreground">
                     <Route size={11} className="inline mr-1" />
                     Loja → {optimizedRoute.map((o) => o.customerName).join(" → ")} → Loja
@@ -1082,7 +1773,7 @@ const Index = () => {
                     {isAdmin ? (
                       <button
                         onClick={() => setShowAssignModal(true)}
-                        className="w-full py-3 rounded-lg bg-primary text-primary-foreground font-semibold text-sm hover:bg-primary/90 transition-all glow-primary flex items-center justify-center gap-2"
+                        className="w-full py-3 rounded-lg bg-primary text-primary-foreground font-semibold text-sm hover:bg-primary/90 transition-all glow-primary flex items-center justify-center gap-2 ios-btn"
                       >
                         <Bike size={16} /> Enviar para Motoboy ({selectedOrders.length})
                       </button>
@@ -1090,27 +1781,12 @@ const Index = () => {
                       <button
                         onClick={() => driver && handleAssignCourier(driver.name)}
                         disabled={assigning || !driver}
-                        className="w-full py-3 rounded-lg bg-primary text-primary-foreground font-semibold text-sm hover:bg-primary/90 transition-all glow-primary flex items-center justify-center gap-2 disabled:opacity-50"
+                        className="w-full py-3 rounded-lg bg-primary text-primary-foreground font-semibold text-sm hover:bg-primary/90 transition-all glow-primary flex items-center justify-center gap-2 disabled:opacity-50 ios-btn"
                       >
                         {assigning ? <Loader2 size={16} className="animate-spin" /> : <Bike size={16} />}
                         {assigning ? "Atribuindo..." : `Atribuir a Mim (${selectedOrders.length})`}
                       </button>
                     )}
-                    <div className="flex gap-2">
-                      <button
-                        onClick={openRoute}
-                        className="flex-1 py-2 rounded-lg bg-secondary text-secondary-foreground text-sm font-medium hover:bg-secondary/80 transition-all border border-border flex items-center justify-center gap-1.5"
-                      >
-                        <Navigation size={13} /> Abrir Rota
-                      </button>
-                      <button
-                        onClick={copyRoute}
-                        className="flex-1 py-2 rounded-lg bg-secondary text-secondary-foreground text-sm font-medium hover:bg-secondary/80 transition-all border border-border flex items-center justify-center gap-1.5"
-                      >
-                        {copied ? <Check size={13} className="text-primary" /> : <Copy size={13} />}
-                        {copied ? "Copiado!" : "Copiar Rota"}
-                      </button>
-                    </div>
                   </div>
                 </div>
               </div>
@@ -1132,7 +1808,101 @@ const Index = () => {
             )}
           </>
         )}
+
+        {/* ── Ranking View ── */}
+        {!needsAuth && !checkingAuth && activeTab === "ranking" && (
+          <RankingTab />
+        )}
       </main>
+
+      {/* ── Driver Map View (Outside Main Container) ── */}
+      {!needsAuth && !checkingAuth && activeTab === "map" && isAdmin && (
+        <div className="fixed inset-0 z-30 pt-[72px] sm:pt-[72px]">
+          <TrackingMap storeLat={storeLat} storeLng={storeLng} routes={courierRoutes} />
+        </div>
+      )}
+
+      {/* ── Apple Style Floating Bottom Nav ── */}
+      {!needsAuth && !checkingAuth && (
+        <div className="fixed bottom-6 inset-x-0 z-50 px-4 flex justify-center pointer-events-none">
+          <div className="glass-nav rounded-[2rem] flex p-1.5 gap-1 shadow-2xl overflow-x-auto max-w-full pointer-events-auto hide-scrollbar border border-white/10 relative">
+            
+            <button
+              onClick={() => { haptic(); setActiveTab("queue"); }}
+              className={`flex flex-col items-center justify-center min-w-[76px] px-3 py-2 rounded-[1.5rem] transition-all ios-btn border-none ${activeTab === "queue" ? "bg-primary/20 text-primary shadow-sm" : "text-muted-foreground hover:bg-secondary/50"}`}
+            >
+              <div className="relative">
+                <Package size={22} className="mb-0.5" />
+                {unconfirmedOrders.length > 0 && (
+                  <span className="absolute -top-1.5 -right-2.5 w-4 h-4 rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center shadow-md">
+                    {unconfirmedOrders.length}
+                  </span>
+                )}
+              </div>
+              <span className="text-[10px] font-semibold tracking-tight mt-0.5">Fila</span>
+            </button>
+
+            {isDriver && driver && (
+              <button
+                onClick={() => {
+                  haptic();
+                  const myRoute = courierRoutes.find(r => r.name === driver.name && r.orders.some(o => !o.confirmed));
+                  setActiveTab(myRoute ? myRoute.id : "minha_rota");
+                }}
+                className={`flex flex-col items-center justify-center min-w-[76px] px-3 py-2 rounded-[1.5rem] transition-all ios-btn border-none ${
+                    (courierRoutes.some(r => r.name === driver.name && r.id === activeTab) || activeTab === "minha_rota") ? "bg-primary/20 text-primary shadow-sm" : "text-muted-foreground hover:bg-secondary/50"
+                }`}
+              >
+                <div className="relative">
+                  {driverEmojis[driver.name] ? (
+                    <div className="mb-0.5"><AppleEmoji name={driverEmojis[driver.name]} size={22} /></div>
+                  ) : (
+                    <Bike size={22} className="mb-0.5" />
+                  )}
+                  {(() => {
+                    const myRoute = courierRoutes.find(r => r.name === driver.name && r.orders.some(o => !o.confirmed));
+                    const badgeCount = myRoute ? myRoute.orders.filter(o => !o.confirmed).length : 0;
+                    return badgeCount > 0 ? (
+                      <span className="absolute -top-1.5 -right-2.5 w-4 h-4 rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center shadow-md">
+                        {badgeCount}
+                      </span>
+                    ) : null;
+                  })()}
+                </div>
+                <span className="text-[10px] font-semibold tracking-tight mt-0.5">Minha Rota</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => { haptic(); setActiveTab("ranking"); }}
+              className={`flex flex-col items-center justify-center min-w-[76px] px-3 py-2 rounded-[1.5rem] transition-all ios-btn border-none ${activeTab === "ranking" ? "bg-primary/20 text-primary shadow-sm" : "text-muted-foreground hover:bg-secondary/50"}`}
+            >
+              <Trophy size={22} className="mb-0.5" />
+              <span className="text-[10px] font-semibold tracking-tight mt-0.5">Ranking</span>
+            </button>
+
+            {isAdmin && (
+              <button
+                onClick={() => { haptic(); setActiveTab("map"); }}
+                className={`flex flex-col items-center justify-center min-w-[76px] px-3 py-2 rounded-[1.5rem] transition-all ios-btn ${activeTab === "map" ? "bg-primary/20 text-primary shadow-sm" : "text-muted-foreground hover:bg-secondary/50"}`}
+              >
+                <MapPin size={22} className="mb-0.5" />
+                <span className="text-[10px] font-semibold tracking-tight mt-0.5">Mapa</span>
+              </button>
+            )}
+
+            {isAdmin && (
+              <button
+                onClick={() => { haptic(); setActiveTab("dev_panel"); }}
+                className={`flex flex-col items-center justify-center min-w-[76px] px-3 py-2 rounded-2xl transition-all ios-btn ${activeTab === "dev_panel" ? "bg-purple-500/20 text-purple-400 shadow-sm" : "text-muted-foreground hover:bg-secondary/50"}`}
+              >
+                <FlaskConical size={22} className="mb-0.5" />
+                <span className="text-[10px] font-semibold tracking-tight mt-0.5">Testes</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Assign courier modal */}
       {showAssignModal && (
@@ -1164,6 +1934,10 @@ const Index = () => {
             approveIncoming();
           }}
         />
+      )}
+
+      {showNotifications && (
+        <NotificationCenter onClose={() => setShowNotifications(false)} />
       )}
     </div>
   );

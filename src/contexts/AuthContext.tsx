@@ -14,6 +14,7 @@ export interface Driver {
   name: string;
   phone: string | null;
   status: string;
+  notes?: string | null;
   approved_at: string | null;
   created_at: string;
 }
@@ -64,7 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (profileData.driver_id) {
       const { data: driverData } = await supabase
         .from("drivers")
-        .select("id, name, phone, status, approved_at, created_at")
+        .select("id, name, phone, status, notes, approved_at, created_at")
         .eq("id", profileData.driver_id)
         .maybeSingle();
       setDriver((driverData as Driver) ?? null);

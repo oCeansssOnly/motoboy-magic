@@ -1,0 +1,33 @@
+﻿{
+  "id": "59249f9e-3fb5-4aa0-8d17-5e6179d8ed20",
+  "name": "Teste - 55.041.573 ROBERTO MAIA SANTOS",
+  "corporateName": "Teste - 55.041.573 ROBERTO MAIA SANTOS",
+  "averageTicket": 30,
+  "exclusive": false,
+  "type": "STORE",
+  "status": "AVAILABLE",
+  "createdAt": "2026-03-01T05:46:28.874857Z",
+  "test": "TEST",
+  "address": {
+    "country": "BR",
+    "state": "AC",
+    "city": "Bujari",
+    "district": "Bujari",
+    "street": "Ramal Bujari, 122, Bujari",
+    "number": "122",
+    "postalCode": "12345678",
+    "latitude": -9.822384,
+    "longitude": -67.948589
+  },
+  "operations": [
+    {
+      "name": "delivery",
+      "salesChannels": [
+        {
+          "name": "ifood-app",
+          "enabled": true
+        }
+      ]
+    }
+  ]
+}

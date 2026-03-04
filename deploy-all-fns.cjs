@@ -34,6 +34,7 @@ async function main() {
   console.log(`\n🚀  Deploying functions...\n`);
   await deployFn('ifood-orders');
   await deployFn('ifood-dispatch');
+  await deployFn('ifood-webhook');
   console.log('\n✅  Done!\n');
 }
 
