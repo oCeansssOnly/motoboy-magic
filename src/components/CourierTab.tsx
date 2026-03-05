@@ -197,7 +197,7 @@ function DeliveryRow({
 
   const handleConfirm = async () => {
     if (!confirmCode.trim()) { toast.error("Informe o código de confirmação!"); return; }
-    
+
     // Bypass iFood API for locally-generated test orders
     if (order.id.startsWith("TEST-")) {
       if (confirmCode.trim() !== order.deliveryCode) {
@@ -254,7 +254,7 @@ function DeliveryRow({
     >
       {/* iOS List arrow indicator 
       <ChevronRight size={16} className="absolute right-4 top-5 text-muted-foreground/30" /> */}
-      
+
       {/* Top row */}
       <div className="flex items-start justify-between gap-2 pr-2">
         <div className="flex-1 min-w-0">
@@ -336,8 +336,8 @@ function DeliveryRow({
                   ))}
                 </div>
               )}
-              <button 
-                onClick={() => { haptic(); setShowReassign(false); }} 
+              <button
+                onClick={() => { haptic(); setShowReassign(false); }}
                 className="text-xs font-semibold text-red-500 hover:text-red-400 w-full text-center py-2 mt-1 ios-btn">
                 Cancelar
               </button>

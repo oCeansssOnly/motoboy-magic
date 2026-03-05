@@ -109,6 +109,7 @@ export function generateGoogleMapsUrl(
 
 
 export function getPaymentLabel(method: string): string {
+  const methodUpper = method?.toUpperCase() || '';
   const labels: Record<string, string> = {
     ONLINE: '💳 Online',
     CASH: '💵 Dinheiro',
@@ -117,5 +118,37 @@ export function getPaymentLabel(method: string): string {
     DEBIT: '💳 Débito',
     MEAL_VOUCHER: '🎫 Vale Refeição',
   };
-  return labels[method] || method;
+  
+  if (labels[methodUpper]) {
+    return labels[methodUpper];
+  }
+  
+  if (!method) return '💳 Adicionada no App';
+
+  // Capitalize dynamically if not mapped (e.g., "maquininha" -> "💳 Maquininha")
+  return '💳 ' + method.charAt(0).toUpperCase() + method.slice(1).toLowerCase();
+}
+
+/**
+ * Returns the delay in minutes.
+ * - Positive number: The order is delayed by X minutes.
+ * - Negative number: The order still has X minutes before it's delayed.
+ * - 0: The order is right on time, expiring now.
+ */
+export function getOrderDelay(order: IFoodOrder): number {
+  let expectedTime: number;
+
+  if (order.raw?.delivery?.expectedDeliveryDateTime) {
+    expectedTime = new Date(order.raw.delivery.expectedDeliveryDateTime).getTime();
+  } else if (order.createdAt) {
+    // Fallback: 50 minutes after order creation is roughly a common SLA
+    expectedTime = new Date(order.createdAt).getTime() + 50 * 60 * 1000;
+  } else {
+    // Extreme fallback: no date info, assume not delayed
+    return -99;
+  }
+
+  const now = Date.now();
+  const diffMs = now - expectedTime;
+  return Math.round(diffMs / (60 * 1000));
 }

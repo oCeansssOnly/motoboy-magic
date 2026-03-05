@@ -1,0 +1,155 @@
+﻿[93m[4mUnused files[24m[39m (93)
+add-unique-constraint.cjs                 
+bundle-deploy.cjs                         
+check-merchant.cjs                        
+check_payload.mjs                         
+cleanup-stale-db-records.cjs              
+create-courier-routes-table.cjs           
+create-order-status-events.cjs            
+debug-edge-fn.cjs                         
+debug-orders.cjs                          
+debug-raw.cjs                             
+deploy-all-fns.cjs                        
+deploy-cancel.cjs                         
+deploy-confirm.cjs                        
+deploy-final.cjs                          
+deploy-function.js                        
+deploy-only.cjs                           
+diagnose-order.cjs                        
+enable-pending-realtime.cjs               
+esbuild-deploy.cjs                        
+fetch-order.cjs                           
+fix-check-route-fn.cjs                    
+fix_fees.mjs                              
+get-logs.cjs                              
+migrate-supabase.cjs                      
+migrate-supabase.js                       
+patch-debug-logs.cjs                      
+raw-deploy.cjs                            
+register-ifood-webhook.cjs                
+sync-active-orders.cjs                    
+test-minimal.cjs                          
+test-with-import.cjs                      
+test_total.js                             
+test_total.mjs                            
+src/App.css                               
+src/components/EndRouteModal.tsx          
+src/components/LoginModal.tsx             
+src/components/NavLink.tsx                
+src/hooks/use-mobile.tsx                  
+src/hooks/use-toast.ts                    
+src/pages/DriverSignup.tsx                
+src/components/ui/accordion.tsx           
+src/components/ui/alert-dialog.tsx        
+src/components/ui/alert.tsx               
+src/components/ui/aspect-ratio.tsx        
+src/components/ui/avatar.tsx              
+src/components/ui/badge.tsx               
+src/components/ui/breadcrumb.tsx          
+src/components/ui/button.tsx              
+src/components/ui/calendar.tsx            
+src/components/ui/card.tsx                
+src/components/ui/carousel.tsx            
+src/components/ui/chart.tsx               
+src/components/ui/checkbox.tsx            
+src/components/ui/collapsible.tsx         
+src/components/ui/command.tsx             
+src/components/ui/context-menu.tsx        
+src/components/ui/dialog.tsx              
+src/components/ui/drawer.tsx              
+src/components/ui/dropdown-menu.tsx       
+src/components/ui/form.tsx                
+src/components/ui/hover-card.tsx          
+src/components/ui/input-otp.tsx           
+src/components/ui/input.tsx               
+src/components/ui/label.tsx               
+src/components/ui/menubar.tsx             
+src/components/ui/navigation-menu.tsx     
+src/components/ui/pagination.tsx          
+src/components/ui/popover.tsx             
+src/components/ui/progress.tsx            
+src/components/ui/radio-group.tsx         
+src/components/ui/resizable.tsx           
+src/components/ui/scroll-area.tsx         
+src/components/ui/select.tsx              
+src/components/ui/separator.tsx           
+src/components/ui/sheet.tsx               
+src/components/ui/sidebar.tsx             
+src/components/ui/skeleton.tsx            
+src/components/ui/slider.tsx              
+src/components/ui/switch.tsx              
+src/components/ui/table.tsx               
+src/components/ui/tabs.tsx                
+src/components/ui/textarea.tsx            
+src/components/ui/toast.tsx               
+src/components/ui/toaster.tsx             
+src/components/ui/toggle-group.tsx        
+src/components/ui/toggle.tsx              
+src/components/ui/use-toast.ts            
+supabase/functions/ifood-auth/index.ts    
+supabase/functions/ifood-cancel/index.ts  
+supabase/functions/ifood-confirm/index.ts 
+supabase/functions/ifood-dispatch/index.ts
+supabase/functions/ifood-orders/index.ts  
+supabase/functions/ifood-webhook/index.ts 
+[93m[4mUnused dependencies[24m[39m (38)
+@hookform/resolvers              package.json:16:6
+@radix-ui/react-accordion        package.json:18:6
+@radix-ui/react-alert-dialog     package.json:19:6
+@radix-ui/react-aspect-ratio     package.json:20:6
+@radix-ui/react-avatar           package.json:21:6
+@radix-ui/react-checkbox         package.json:22:6
+@radix-ui/react-collapsible      package.json:23:6
+@radix-ui/react-context-menu     package.json:24:6
+@radix-ui/react-dialog           package.json:25:6
+@radix-ui/react-dropdown-menu    package.json:26:6
+@radix-ui/react-hover-card       package.json:27:6
+@radix-ui/react-label            package.json:28:6
+@radix-ui/react-menubar          package.json:29:6
+@radix-ui/react-navigation-menu  package.json:30:6
+@radix-ui/react-popover          package.json:31:6
+@radix-ui/react-progress         package.json:32:6
+@radix-ui/react-radio-group      package.json:33:6
+@radix-ui/react-scroll-area      package.json:34:6
+@radix-ui/react-select           package.json:35:6
+@radix-ui/react-separator        package.json:36:6
+@radix-ui/react-slider           package.json:37:6
+@radix-ui/react-slot             package.json:38:6
+@radix-ui/react-switch           package.json:39:6
+@radix-ui/react-tabs             package.json:40:6
+@radix-ui/react-toast            package.json:41:6
+@radix-ui/react-toggle           package.json:42:6
+@radix-ui/react-toggle-group     package.json:43:6
+class-variance-authority         package.json:47:6
+cmdk                             package.json:49:6
+date-fns                         package.json:50:6
+embla-carousel-react             package.json:51:6
+input-otp                        package.json:53:6
+react-day-picker                 package.json:58:6
+react-hook-form                  package.json:60:6
+react-resizable-panels           package.json:61:6
+recharts                         package.json:63:6
+vaul                             package.json:67:6
+zod                              package.json:68:6
+[93m[4mUnused devDependencies[24m[39m (3)
+@tailwindcss/typography  package.json:72:6
+@testing-library/react   package.json:74:6
+supabase                 package.json:89:6
+[93m[4mUnused exports[24m[39m (5)
+toast           src/components/ui/sonner.tsx:27:19       
+Tooltip         src/components/ui/tooltip.tsx:28:10      
+TooltipTrigger  src/components/ui/tooltip.tsx:28:19      
+TooltipContent  src/components/ui/tooltip.tsx:28:35      
+Constants       src/integrations/supabase/types.ts:364:14
+[93m[4mUnused exported types[24m[39m (10)
+UserProfile      interface  src/contexts/AuthContext.tsx:5:18        
+Driver           interface  src/contexts/AuthContext.tsx:12:18       
+DriverLocation   interface  src/hooks/useDriverLocation.ts:9:18      
+TransferRequest  interface  src/hooks/useTransferRequests.ts:6:18    
+Json             type       src/integrations/supabase/types.ts:1:13  
+Tables           type       src/integrations/supabase/types.ts:251:13
+TablesInsert     type       src/integrations/supabase/types.ts:280:13
+TablesUpdate     type       src/integrations/supabase/types.ts:305:13
+Enums            type       src/integrations/supabase/types.ts:330:13
+CompositeTypes   type       src/integrations/supabase/types.ts:347:13
+[33m[4mConfiguration hints[24m (1)[39m

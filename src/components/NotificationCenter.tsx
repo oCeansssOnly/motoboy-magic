@@ -23,7 +23,7 @@ export function NotificationCenter({ onClose }: NotificationCenterProps) {
         {/* Header - Apple Style */}
         <div className="flex items-center justify-between mb-4 px-2">
           <h2 className="font-bold text-white text-2xl tracking-tight drop-shadow-md">Central de Notificações</h2>
-          <button onClick={() => { haptic(); onClose(); }} className="p-2.5 rounded-full bg-white/20 backdrop-blur-lg hover:bg-white/30 text-white transition-colors ios-btn shadow-sm">
+          <button onClick={() => { haptic(); onClose(); }} className="p-2.5 rounded-full bg-[#1c1c1e]/80 backdrop-blur-3xl hover:bg-[#2c2c2e]/80 text-white/70 hover:text-white transition-colors flex items-center justify-center">
             <X size={20} />
           </button>
         </div>
@@ -38,7 +38,7 @@ export function NotificationCenter({ onClose }: NotificationCenterProps) {
         )}
 
         {/* List */}
-        <div className="flex-1 overflow-y-auto space-y-3 pb-8 hide-scrollbar px-1">
+        <div className="flex-1 overflow-y-auto space-y-3 pb-8 px-1 scrollbar-none [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
           {notifications.length === 0 ? (
             <div className="flex flex-col items-center justify-center p-12 text-center mt-10">
               <div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center backdrop-blur-lg mb-4">
@@ -48,23 +48,22 @@ export function NotificationCenter({ onClose }: NotificationCenterProps) {
             </div>
           ) : (
             notifications.map((n) => (
-              <div key={n.id} className="bg-white/70 dark:bg-[#1c1c1e]/70 backdrop-blur-xl p-4 rounded-3xl shadow-lg border border-white/20 dark:border-white/10 flex flex-col gap-1.5 animate-fade-in pointer-events-none transform transition-all duration-300">
+              <div key={n.id} className="bg-[#1c1c1e]/80 backdrop-blur-3xl p-4 sm:p-5 rounded-[1.75rem] border border-white/5 flex flex-col gap-1.5 animate-fade-in pointer-events-none transform transition-all duration-300 shadow-xl">
                 {/* Top Label (App style) */}
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between mb-0.5">
                   <div className="flex items-center gap-1.5">
                     {ICONS[n.type]}
-                    <span className="text-[11px] font-semibold tracking-wider text-foreground/70 uppercase">RouteOS</span>
+                    <span className="text-[11px] font-semibold tracking-wider text-white/50 uppercase">RouteOS</span>
                   </div>
-                  <div className="flex items-center gap-2 text-[11px] font-medium text-foreground/50">
-                    <span>{new Date(n.timestamp).toLocaleDateString("pt-BR", { day: '2-digit', month: '2-digit' })}</span>
+                  <div className="flex items-center gap-2 text-[11px] font-medium text-white/40">
                     <span>{new Date(n.timestamp).toLocaleTimeString("pt-BR", { hour: '2-digit', minute: '2-digit' })}</span>
                   </div>
                 </div>
                 
                 {/* Main Content */}
-                <div className="mt-1">
-                  <p className="font-bold text-[15px] text-foreground tracking-tight leading-tight">{n.title}</p>
-                  <p className="text-[14px] text-foreground/80 mt-1 leading-snug font-medium line-clamp-3">{n.message}</p>
+                <div className="mt-0.5 flex flex-col gap-1">
+                  <p className="font-semibold text-[15px] sm:text-[16px] text-white tracking-tight leading-snug">{n.title}</p>
+                  <p className="text-[13px] sm:text-[14px] text-white/70 leading-relaxed font-normal line-clamp-3">{n.message}</p>
                 </div>
               </div>
             ))

@@ -1,6 +1,7 @@
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, GET, OPTIONS, PUT, DELETE",
 };
 
 const IFOOD_API = "https://merchant-api.ifood.com.br";
@@ -96,7 +97,9 @@ Deno.serve(async (req: Request) => {
             const isCancelled = CANCELLED_S.has(status);
             const isConcluded = status === "CONCLUDED" || status === "DELIVERED" || status === "COR" || status === "CDD";
             
-            return { id, valid: !isCancelled && !isConcluded };
+            // Do not treat naturally cancelled as invalid or else it gets purged silently.
+            // We want it visually staying in DB with status=CANCELLED so the Motoboy App UI can show it.
+            return { id, valid: (isCancelled || !isConcluded) };
           } catch {
             return { id, valid: true }; // don't purge on throw
           }
@@ -234,8 +237,15 @@ Deno.serve(async (req: Request) => {
 
     // Statuses we want to show in the restaurant queue
     // Only show orders that the store has ACCEPTED for own delivery.
-    // PLACED = customer placed, not yet accepted. READY_TO_PICKUP = kitchen ready (iFood delivery).
-    const SHOW_STATUSES = ["ACCEPTED", "DISPATCHED"];
+    // We include CONFIRMED, PREPARING, READY_TO_PICKUP so they don't disappear when the restaurant starts preparing them.
+    const SHOW_STATUSES = [
+      "ACCEPTED", 
+      "CONFIRMED", 
+      "PREPARATION_STARTED", 
+      "PREPARING", 
+      "READY_TO_PICKUP", 
+      "DISPATCHED"
+    ];
     const TERMINAL_STATUSES = new Set(["CONCLUDED", "CANCELLED", "CANCELLATION_REQUESTED", "CONSUMER_CANCELLED"]);
     const CANCELLED_STATUSES = new Set(["CANCELLED", "CANCELLATION_REQUESTED", "CONSUMER_CANCELLED"]);
     const OWN_DELIVERY_MODES = ["DEFAULT", "RESTAURANT", "OWN", "PADRAO", "MERCHANT"];
@@ -246,16 +256,17 @@ Deno.serve(async (req: Request) => {
       "ACK": "ACCEPTED", "ACCEPTED": "ACCEPTED",
       // Placed by customer but NOT yet accepted by store → do NOT show
       "PLC": "PLACED", "PLACED": "PLACED",
-      // Restaurant confirmed to kitchen → not our delivery yet
-      "CFM": "PLACED", "CONFIRMED": "PLACED",
-      // Ready to pickup (iFood delivery, not ours)
+      // Restaurant confirmed to kitchen → we SHOULD show it so motoboy can be assigned
+      "CFM": "CONFIRMED", "CONFIRMED": "CONFIRMED",
+      // Ready to pickup
       "RTP": "READY_TO_PICKUP", "READY_TO_PICKUP": "READY_TO_PICKUP",
       "ORDER_CREATED": "PLACED",
       // Dispatched / out for delivery
       "DSP": "DISPATCHED", "DISPATCHED": "DISPATCHED",
       "DDCR": "DISPATCHED", // Driver Dispatched – Consumer Route
       "DDCS": "DISPATCHED", // Driver Dispatched – Consumer Start
-      "PREP": "DISPATCHED", // Preparing
+      "PREP": "PREPARING", // Preparing
+      "PREPARATION_STARTED": "PREPARING",
       "BADI": "DISPATCHED", // Bag dispatched
       "ORDER_DISPATCHED": "DISPATCHED",
       // Terminal – concluded
@@ -318,7 +329,7 @@ Deno.serve(async (req: Request) => {
           status = evCodeMap[evCode] || "";
         }
         const delivery = o.delivery || o.DELIVERY || {};
-        const deliveryMode = (delivery.mode || delivery.MODE || "").toUpperCase();
+        const deliveryMode = (delivery.mode || delivery.MODE || delivery.deliveryBy || delivery.DELIVERYBY || "").toUpperCase();
         const orderType = (o.orderType || o.ORDERTYPE || "DELIVERY").toUpperCase();
 
         // Always log for debug
@@ -359,13 +370,18 @@ Deno.serve(async (req: Request) => {
         // ACKNOWLEDGE and skip — do not let them pile up in the events queue.
         // New events will be fired when the order transitions to ACCEPTED/DISPATCHED.
         if (!SHOW_STATUSES.includes(status)) {
+          console.log(`[ifood-orders] Skipped ${orderId} because status ${status} is not in SHOW_STATUSES`);
           eventIdsToAck.push(ev.id);
           continue;
         }
 
         // Ack-and-skip non-own-delivery orders
-        if (orderType === "TAKEOUT" || orderType === "PICKUP") { eventIdsToAck.push(ev.id); continue; }
+        if (orderType === "TAKEOUT" || orderType === "PICKUP") {
+          console.log(`[ifood-orders] Skipped ${orderId} because orderType is ${orderType}`);
+          eventIdsToAck.push(ev.id); continue;
+        }
         if (deliveryMode && !OWN_DELIVERY_MODES.some(m => deliveryMode.includes(m))) {
+          console.log(`[ifood-orders] Skipped ${orderId} because deliveryMode ${deliveryMode} is not in OWN_DELIVERY_MODES. Raw dump: ${JSON.stringify(delivery)}`);
           eventIdsToAck.push(ev.id); continue;
         }
 
@@ -472,15 +488,21 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // ─ Remove concluded / cancelled from pending queue ────────────────────
-    const toRemove = [
-      ...concludedOrders.map((o: any) => o.id),
-      ...cancelledOrderIds,
-    ];
+    // ─ Remove concluded from pending queue ────────────────────
+    const toRemove = concludedOrders.map((o: any) => o.id);
     if (toRemove.length > 0) {
       await fetch(sbUrl(`/pending_orders?id=in.(${toRemove.join(",")})`), {
         method: "DELETE",
         headers: sbHeaders(),
+      });
+    }
+
+    // ─ Keep cancelled orders in DB, but mark status as CANCELLED ────────────────────
+    if (cancelledOrderIds.length > 0) {
+      await fetch(sbUrl(`/pending_orders?id=in.(${cancelledOrderIds.join(",")})`), {
+        method: "PATCH",
+        headers: sbHeaders(),
+        body: JSON.stringify({ status: "CANCELLED" }),
       });
     }
 

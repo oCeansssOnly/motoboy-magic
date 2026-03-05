@@ -16,11 +16,11 @@ import { useTransferRequests } from "@/hooks/useTransferRequests";
 import { useDriverLocation } from "@/hooks/useDriverLocation";
 import { useDriverEmojis } from "@/hooks/useDriverEmojis";
 import { AppleEmoji } from "@/components/AppleEmoji";
-import { IFoodOrder, CourierRoute, NoContactOrder, optimizeRoute, generateGoogleMapsUrl } from "@/lib/types";
+import { IFoodOrder, CourierRoute, NoContactOrder, optimizeRoute, generateGoogleMapsUrl, getOrderDelay } from "@/lib/types";
 import {
   Navigation, RefreshCw, Route, MapPin, Copy, Check, Loader2, Package,
   AlertCircle, Bike, Radio, Store, Edit2, Check as CheckIcon, X, UserX, RotateCcw,
-  FlaskConical, PackagePlus, Trash2, ChevronRight, Trophy, Bell
+  FlaskConical, PackagePlus, Trash2, ChevronRight, Trophy, Bell, ChevronDown, Wallet
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -95,7 +95,46 @@ const Index = () => {
   const [activeTab, setActiveTab] = useState<"queue" | string>("queue"); // "queue" | routeId
   const [showNotifications, setShowNotifications] = useState(false);
   const { notifications, addNotification, unreadCount } = useNotifications();
-  
+  const [sortByDelay, setSortByDelay] = useState(false);
+
+  // Driver today's earnings & deliveries (Refreshed on mount and when orders confirm)
+  const [driverTodayStats, setDriverTodayStats] = useState({ earningsCents: 0, deliveries: 0 });
+
+  useEffect(() => {
+    // Start of the day in ISO UTC to match DB fields reasonably
+    const now = new Date();
+    // Use string offset to accurately query todays dates if possible, or simple ISO of local date
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+
+    const motoboyName = driver?.name || user?.email?.split('@')[0] || "Motoboy";
+
+    let query = supabase
+      .from("confirmed_orders")
+      .select("order_total_cents, order_code")
+      .gte("confirmed_at", startOfDay);
+
+    if (!isAdmin) {
+      query = query.eq("motoboy_name", motoboyName);
+    }
+
+    query.then(({ data }) => {
+      const all = data || [];
+      const earningsCents = all.reduce((sum, o) => {
+        if (isAdmin) {
+          const grossProduct = parseInt(o.order_code || "0", 10) || 0;
+          // grossProduct is the full order amount paid by the customer.
+          // Fallback to order_total_cents only for older orders before the schema fix today.
+          return sum + (grossProduct > 0 ? grossProduct : (o.order_total_cents || 0));
+        } else {
+          // Drivers only sum delivery fee
+          return sum + (o.order_total_cents || 0);
+        }
+      }, 0);
+      setDriverTodayStats({ deliveries: all.length, earningsCents });
+    });
+  }, [isAdmin, isDriver, driver, user, courierRoutes]); // Re-queries when routes update (like confirming an order)
+
+
   // Fallback to "queue" if active route ceases to exist
   useEffect(() => {
     if (activeTab !== "queue" && activeTab !== "retentativas" && activeTab !== "map" && activeTab !== "dev_panel" && activeTab !== "ranking") {
@@ -121,28 +160,28 @@ const Index = () => {
     const fetchGlobalDismissed = async () => {
       try {
         const queryLimitDate = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-        
+
         // Fetch confirmed orders
         const { data: confirmed } = await supabase
           .from("confirmed_orders")
           .select("ifood_order_id")
           .gte("created_at", queryLimitDate);
-          
+
         // Fetch cancelled/concluded events
         const { data: events } = await supabase
           .from("order_status_events")
           .select("order_id")
           .in("status", ["concluded", "cancelled"])
           .gte("created_at", queryLimitDate);
-          
+
         const globalDismissed = new Set(dismissedIdsRef.current);
         if (confirmed) confirmed.forEach(c => c.ifood_order_id && globalDismissed.add(c.ifood_order_id));
         if (events) events.forEach(e => e.order_id && globalDismissed.add(e.order_id));
-        
+
         dismissedIdsRef.current = globalDismissed;
         setDismissedOrderIds(globalDismissed);
         saveDismissedIds(globalDismissed);
-        
+
         // Prune any existing state orders that were fetched before this synced
         setOrders(prev => prev.filter(o => !globalDismissed.has(o.id)));
       } catch (err) {
@@ -165,7 +204,7 @@ const Index = () => {
   const storeLocationOverriddenRef = useRef(false);
 
   const [isGeneratingTestOrders, setIsGeneratingTestOrders] = useState(false);
-  
+
   const handleGenerateTestOrders = async () => {
     setIsGeneratingTestOrders(true);
     try {
@@ -174,7 +213,7 @@ const Index = () => {
         const r_lat = (Math.random() - 0.5) * 0.04;
         const r_lng = (Math.random() - 0.5) * 0.04;
         const id = "TEST-" + generateId().substring(0, 8).toUpperCase();
-        
+
         const order: IFoodOrder = {
           id,
           displayId: id,
@@ -209,7 +248,7 @@ const Index = () => {
     try {
       await supabase.from("pending_orders").delete().like('id', 'TEST-%');
       toast.success("Pedidos de teste removidos do banco de dados.");
-    } catch(err) {
+    } catch (err) {
       toast.error("Erro ao limpar testes");
     }
   };
@@ -240,7 +279,7 @@ const Index = () => {
   // ── Auto-close helper: remove routes that have no unconfirmed orders left ──
   const cleanupEmptyRoutes = useCallback((prev: CourierRoute[]): CourierRoute[] =>
     prev.filter(r => r.orders.some(o => !o.confirmed))
-  , []);
+    , []);
 
   // ── Transfer request (approved: add order to my route) ─────────────────────
   // Use a ref so handleOrderApproved always reads the current driver even if
@@ -302,10 +341,10 @@ const Index = () => {
           (supabase as any).from("courier_routes").update({
             orders: stillExists.orders,
             updated_at: new Date().toISOString(),
-          }).eq("id", source.id).then(() => {});
+          }).eq("id", source.id).then(() => { });
         } else {
           // Route is now empty — delete from DB
-          (supabase as any).from("courier_routes").delete().eq("id", source.id).then(() => {});
+          (supabase as any).from("courier_routes").delete().eq("id", source.id).then(() => { });
         }
       });
 
@@ -362,7 +401,7 @@ const Index = () => {
           created_at: r.createdAt, updated_at: new Date().toISOString(),
         })),
         { onConflict: "id" }
-      ).then(() => {});
+      ).then(() => { });
     }
 
     // Delete routes that were removed
@@ -370,7 +409,7 @@ const Index = () => {
       .filter(p => !courierRoutes.some(r => r.id === p.id))
       .map(p => p.id);
     deletedIds.forEach(id => {
-      supabase.from("courier_routes" as any).delete().eq("id", id).then(() => {});
+      supabase.from("courier_routes" as any).delete().eq("id", id).then(() => { });
     });
   }, [courierRoutes]);
 
@@ -422,7 +461,7 @@ const Index = () => {
           const safeDelivery = raw.delivery || raw.DELIVERY || {};
           const rawFeeNum = Number(safeTotal.deliveryFee || safeTotal.DELIVERYFEE || raw.deliveryFee || raw.DELIVERYFEE || safeDelivery.fee || safeDelivery.FEE || 0);
           if (rawFeeNum > 0) {
-              return Math.round(rawFeeNum * 100);
+            return Math.round(rawFeeNum * 100);
           }
           const distKm = haversineKm(storeLat, storeLng, r.lat ?? 0, r.lng ?? 0) * 2;
           return 300 + Math.round(distKm * 150);
@@ -435,6 +474,7 @@ const Index = () => {
         selected: false,
         confirmed: false,
         confirmationCode: "",
+        cancelled: r.status === "CANCELLED",
       }));
 
       // ── Cross-check with iFood API: discard stale/phantom orders ─────────
@@ -528,23 +568,23 @@ const Index = () => {
           const safeTotal = raw.total || raw.TOTAL || {};
           const safeDelivery = raw.delivery || raw.DELIVERY || {};
           const rawFeeNum = Number(safeTotal.deliveryFee || safeTotal.DELIVERYFEE || raw.deliveryFee || raw.DELIVERYFEE || safeDelivery.fee || safeDelivery.FEE || 0);
-          
+
           let parsedFee = fresh.deliveryFee || 0;
           if (rawFeeNum > 0) {
-              parsedFee = Math.round(rawFeeNum * 100);
+            parsedFee = Math.round(rawFeeNum * 100);
           } else if (!parsedFee || parsedFee === 0) {
-              const currentStoreLat = JSON.parse(localStorage.getItem(LS_STORE_KEY) || "null")?.lat ?? -23.55052;
-              const currentStoreLng = JSON.parse(localStorage.getItem(LS_STORE_KEY) || "null")?.lng ?? -46.63330;
-              const distKm = haversineKm(currentStoreLat, currentStoreLng, fresh.lat ?? 0, fresh.lng ?? 0) * 2;
-              parsedFee = 300 + Math.round(distKm * 150);
+            const currentStoreLat = JSON.parse(localStorage.getItem(LS_STORE_KEY) || "null")?.lat ?? -23.55052;
+            const currentStoreLng = JSON.parse(localStorage.getItem(LS_STORE_KEY) || "null")?.lng ?? -46.63330;
+            const distKm = haversineKm(currentStoreLat, currentStoreLng, fresh.lat ?? 0, fresh.lng ?? 0) * 2;
+            parsedFee = 300 + Math.round(distKm * 150);
           }
 
-          existing.set(fresh.id, { 
-              ...fresh, 
-              deliveryFee: parsedFee,
-              selected: false, 
-              confirmed: false, 
-              confirmationCode: "" 
+          existing.set(fresh.id, {
+            ...fresh,
+            deliveryFee: parsedFee,
+            selected: false,
+            confirmed: false,
+            confirmationCode: ""
           });
           added++;
         }
@@ -574,7 +614,7 @@ const Index = () => {
             localStorage.setItem(LS_ADDRESS_KEY, data.merchantAddress);
             supabase.from("app_settings" as any)
               .upsert({ key: "store_address", value: data.merchantAddress, updated_at: new Date().toISOString() }, { onConflict: "key" })
-              .then(() => {});
+              .then(() => { });
           }
           if (data.storeLat && data.storeLng) {
             setStoreLat(data.storeLat);
@@ -609,10 +649,11 @@ const Index = () => {
                 status: "concluded_by_ifood",
                 distance_km: Math.round(distKm * 10) / 10,
                 order_total_cents: deliveryFee,
+                order_code: String(Math.round(Number(order.total || 0) * 100)),
                 delivery_lat: cInfo.lat || order.lat, delivery_lng: cInfo.lng || order.lng,
               }, { onConflict: "ifood_order_id" });
               // Remove from pending queue — order is done
-              supabase.from("pending_orders").delete().eq("id", order.id).then(() => {});
+              supabase.from("pending_orders").delete().eq("id", order.id).then(() => { });
             });
             return { ...route, orders: route.orders.map(o => concluded.some(c => c.id === o.id) ? { ...o, confirmed: true } : o) };
           });
@@ -622,7 +663,7 @@ const Index = () => {
             .filter(r => !cleaned.some(c => c.id === r.id))
             .map(r => r.id);
           removedRouteIds.forEach(id =>
-            (supabase as any).from("courier_routes").delete().eq("id", id).then(() => {})
+            (supabase as any).from("courier_routes").delete().eq("id", id).then(() => { })
           );
           return cleaned;
         });
@@ -646,17 +687,12 @@ const Index = () => {
             .filter(r => !cleaned.some(c => c.id === r.id))
             .map(r => r.id);
           removedRouteIds.forEach(id =>
-            (supabase as any).from("courier_routes").delete().eq("id", id).then(() => {})
+            (supabase as any).from("courier_routes").delete().eq("id", id).then(() => { })
           );
           return cleaned;
         });
-        // Not yet assigned: remove from queue + dismiss permanently
-        setOrders(prev => prev.filter(o => !cancelledSet.has(o.id)));
-        const nextDismissed = new Set(dismissedIdsRef.current);
-        data.cancelledOrderIds.forEach((id: string) => nextDismissed.add(id));
-        dismissedIdsRef.current = nextDismissed;
-        setDismissedOrderIds(nextDismissed);
-        saveDismissedIds(nextDismissed);
+        // Not yet assigned: mark as cancelled so the UI shows them faded
+        setOrders(prev => prev.map(o => cancelledSet.has(o.id) ? { ...o, cancelled: true } : o));
         toast.warning(`${data.cancelledOrderIds.length} pedido(s) cancelado(s) pelo iFood.`, { duration: 5000 });
       }
 
@@ -737,7 +773,7 @@ const Index = () => {
             const safeDelivery = raw.delivery || raw.DELIVERY || {};
             const rawFeeNum = Number(safeTotal.deliveryFee || safeTotal.DELIVERYFEE || raw.deliveryFee || raw.DELIVERYFEE || safeDelivery.fee || safeDelivery.FEE || 0);
             if (rawFeeNum > 0) {
-                return Math.round(rawFeeNum * 100);
+              return Math.round(rawFeeNum * 100);
             }
             const distKm = haversineKm(storeLat, storeLng, row.lat ?? 0, row.lng ?? 0) * 2;
             return 300 + Math.round(distKm * 150);
@@ -849,16 +885,17 @@ const Index = () => {
                 status: "confirmed",
                 distance_km: Math.round(distKm * 10) / 10,
                 order_total_cents: inRoute.deliveryFee || 0,
+                order_code: String(Math.round(Number(inRoute.total || 0) * 100)),
                 delivery_lat: inRoute.lat || storeLat,
                 delivery_lng: inRoute.lng || storeLng,
-              }, { onConflict: "ifood_order_id" }).then(() => {});
-              supabase.from("pending_orders").delete().eq("id", inRoute.id).then(() => {});
+              }, { onConflict: "ifood_order_id" }).then(() => { });
+              supabase.from("pending_orders").delete().eq("id", inRoute.id).then(() => { });
               return { ...route, orders: route.orders.map(o => o.id === ev.order_id ? { ...o, confirmed: true } : o) };
             });
             const cleaned = cleanupEmptyRoutes(updated);
             // Delete empty routes from DB
             prev.filter(r => !cleaned.some(c => c.id === r.id))
-              .forEach(r => (supabase as any).from("courier_routes").delete().eq("id", r.id).then(() => {}));
+              .forEach(r => (supabase as any).from("courier_routes").delete().eq("id", r.id).then(() => { }));
             return cleaned;
           });
           // Also remove from pending queue if not yet assigned
@@ -881,7 +918,7 @@ const Index = () => {
             const cleaned = cleanupEmptyRoutes(updated);
             // Delete empty routes from DB
             prev.filter(r => !cleaned.some(c => c.id === r.id))
-              .forEach(r => (supabase as any).from("courier_routes").delete().eq("id", r.id).then(() => {}));
+              .forEach(r => (supabase as any).from("courier_routes").delete().eq("id", r.id).then(() => { }));
             return cleaned;
           });
           // Remove from pending queue + dismiss permanently
@@ -892,13 +929,13 @@ const Index = () => {
           setDismissedOrderIds(nextDismissed);
           saveDismissedIds(nextDismissed);
           // Delete from pending_orders DB
-          supabase.from("pending_orders").delete().eq("id", ev.order_id).then(() => {});
+          supabase.from("pending_orders").delete().eq("id", ev.order_id).then(() => { });
           toast.warning(`Pedido cancelado pelo iFood.`, { duration: 5000 });
           addNotification("error", "Pedido Cancelado", `O pedido #${ev.order_id.slice(-4)} foi cancelado pelo iFood ou cliente.`);
         }
 
         // Delete event after processing (cleanup — no need to keep it)
-        (supabase as any).from("order_status_events").delete().eq("id", ev.id).then(() => {});
+        (supabase as any).from("order_status_events").delete().eq("id", ev.id).then(() => { });
       })
       .subscribe();
 
@@ -912,7 +949,7 @@ const Index = () => {
   // Clean async function — reads from ref, single setCourierRoutes call, no nesting.
   const checkRouteOrdersStatus = useCallback(async () => {
     const snapshot = courierRoutesRef.current;
-    
+
     // Ignore TEST- orders because they don't exist in iFood API 
     // and would be mistakenly marked as CONCLUDED.
     const inRouteOrders = snapshot.flatMap(r =>
@@ -925,7 +962,7 @@ const Index = () => {
         body: { action: "check_route_orders", orderIds },
       });
       if (error || !data?.results) return;
-      
+
       const concluded = new Set();
       const cancelled = new Set();
       for (const r of data.results) {
@@ -951,11 +988,11 @@ const Index = () => {
               }, { onConflict: "ifood_order_id" }).then(({ error }) => {
                 if (error) console.error("[Index] Error upserting confirmed_order (automatic):", error);
               });
-              supabase.from("pending_orders").delete().eq("id", o.id).then(() => {});
+              supabase.from("pending_orders").delete().eq("id", o.id).then(() => { });
               return { ...o, confirmed: true };
             }
             if (cancelled.has(o.id) && !o.confirmed) {
-              supabase.from("pending_orders").delete().eq("id", o.id).then(() => {});
+              supabase.from("pending_orders").delete().eq("id", o.id).then(() => { });
               return { ...o, confirmed: true, cancelled: true };
             }
             return o;
@@ -963,7 +1000,7 @@ const Index = () => {
         }));
         const cleaned = cleanupEmptyRoutes(updated);
         routes.filter(r => !cleaned.some(c => c.id === r.id))
-          .forEach(r => (supabase).from("courier_routes").delete().eq("id", r.id).then(() => {}));
+          .forEach(r => (supabase).from("courier_routes").delete().eq("id", r.id).then(() => { }));
         if (concluded.size > 0) toast.info(`${concluded.size} pedido(s) finalizado(s) pelo iFood.`, { duration: 5000 });
         if (cancelled.size > 0) toast.warning(`${cancelled.size} pedido(s) cancelado(s) pelo iFood.`, { duration: 5000 });
         return cleaned;
@@ -1085,7 +1122,7 @@ const Index = () => {
     supabase.from("pending_orders")
       .delete()
       .in("id", [...assignedIds])
-      .then(() => {});
+      .then(() => { });
 
     setOrders((prev) => prev.filter((o) => !assignedIds.has(o.id)));
     setSelectedIds(new Set());
@@ -1112,14 +1149,14 @@ const Index = () => {
           : r
       );
       const cleaned = cleanupEmptyRoutes(next);
-      
+
       // Persist the modified active route back to DB
       const activeRoute = cleaned.find(r => r.id === routeId);
       if (activeRoute) {
-        (supabase as any).from("courier_routes").update({ orders: activeRoute.orders, updated_at: new Date().toISOString() }).eq("id", routeId).then(() => {});
+        (supabase as any).from("courier_routes").update({ orders: activeRoute.orders, updated_at: new Date().toISOString() }).eq("id", routeId).then(() => { });
       } else {
         // Route became empty, delete it
-        (supabase as any).from("courier_routes").delete().eq("id", routeId).then(() => {});
+        (supabase as any).from("courier_routes").delete().eq("id", routeId).then(() => { });
       }
 
       if (!activeRoute) {
@@ -1180,13 +1217,13 @@ const Index = () => {
       if (destIdx >= 0) {
         const updated = [...prev];
         updated[destIdx] = { ...updated[destIdx], orders: [...updated[destIdx].orders, orderToAdd] };
-        (supabase as any).from("courier_routes").update({ orders: updated[destIdx].orders }).eq("id", updated[destIdx].id).then(() => {});
+        (supabase as any).from("courier_routes").update({ orders: updated[destIdx].orders }).eq("id", updated[destIdx].id).then(() => { });
         return updated;
       }
       const newRoute: CourierRoute = { id: generateId(), name: driverName, orders: [orderToAdd], startLat: storeLat, startLng: storeLng, createdAt: new Date().toISOString() };
       (supabase as any).from("courier_routes").insert({
         id: newRoute.id, name: newRoute.name, orders: newRoute.orders, start_lat: newRoute.startLat, start_lng: newRoute.startLng
-      }).then(() => {});
+      }).then(() => { });
       return [...prev, newRoute];
     });
     setNoContactOrders(prev => prev.filter(x => x.id !== nc.id));
@@ -1224,6 +1261,7 @@ const Index = () => {
           status: "confirmed",
           distance_km: Math.round(distKm * 10) / 10,
           order_total_cents: order.deliveryFee || 0,
+          order_code: String(Math.round(Number(order.total || 0) * 100)),
           delivery_lat: order.lat || storeLat,
           delivery_lng: order.lng || storeLng,
           confirmed_at: new Date().toISOString(),
@@ -1231,13 +1269,13 @@ const Index = () => {
           if (error) console.error("[Index] Error upserting confirmed_order (manual):", error);
         });
         // Delete from pending_orders — order is confirmed, no longer pending
-        supabase.from("pending_orders").delete().eq("id", order.id).then(() => {});
+        supabase.from("pending_orders").delete().eq("id", order.id).then(() => { });
       }
       const cleaned = cleanupEmptyRoutes(updated);
       // If the route became empty, delete it from courier_routes DB
       const routeStillExists = cleaned.some(r => r.id === routeId);
       if (!routeStillExists) {
-        (supabase as any).from("courier_routes").delete().eq("id", routeId).then(() => {});
+        (supabase as any).from("courier_routes").delete().eq("id", routeId).then(() => { });
       } else {
         // Route still has orders — update it so others see the confirmed state
         const updatedRoute = cleaned.find(r => r.id === routeId);
@@ -1245,7 +1283,7 @@ const Index = () => {
           (supabase as any).from("courier_routes").update({
             orders: updatedRoute.orders,
             updated_at: new Date().toISOString(),
-          }).eq("id", routeId).then(() => {});
+          }).eq("id", routeId).then(() => { });
         }
       }
       return cleaned;
@@ -1298,7 +1336,7 @@ const Index = () => {
     });
 
     // Delete from pending_orders just in case it was still there
-    supabase.from("pending_orders").delete().eq("id", orderId).then(() => {});
+    supabase.from("pending_orders").delete().eq("id", orderId).then(() => { });
     setOrders((prev) => prev.filter((o) => o.id !== orderId));
 
     toast.success(`Pedido transferido para você! Rota atualizada.`);
@@ -1331,9 +1369,9 @@ const Index = () => {
     });
 
     // Delete from pending_orders just in case it was still there
-    supabase.from("pending_orders").delete().eq("id", orderId).then(() => {});
+    supabase.from("pending_orders").delete().eq("id", orderId).then(() => { });
     setOrders((prev) => prev.filter((o) => o.id !== orderId));
-    
+
     toast.success(`Pedido reatribuído para ${toDriver}.`);
   };
 
@@ -1349,7 +1387,13 @@ const Index = () => {
   courierRoutes.forEach(r => r.orders.forEach(o => assignedOrderIds.add(o.id)));
 
   // Filter queue to show only orders that are NOT confirmed AND NOT assigned to a route
-  const unconfirmedOrders = orders.filter((o) => !o.confirmed && !assignedOrderIds.has(o.id));
+  let unconfirmedOrders = orders.filter((o) => !o.confirmed && !assignedOrderIds.has(o.id));
+  
+  // Apply delay sorting if toggled
+  if (sortByDelay) {
+    unconfirmedOrders = [...unconfirmedOrders].sort((a, b) => getOrderDelay(b) - getOrderDelay(a));
+  }
+  
   const confirmedOrders = orders.filter((o) => o.confirmed);
   const activeRouteData = courierRoutes.find((r) => r.id === activeTab);
 
@@ -1367,36 +1411,54 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      {/* Header - iOS Large Title Style */}
-      <header className={`pt-12 pb-4 px-4 sticky top-0 z-40 bg-background/80 backdrop-blur-xl border-b border-border shadow-sm ${activeTab === 'map' ? 'hidden sm:block' : ''}`}>
-        <div className="container max-w-lg mx-auto">
-          <div className="flex items-end justify-between">
-            <div>
-              <p className="text-[11px] font-semibold tracking-widest text-primary uppercase mb-1">Entregas</p>
-              <h1 className="text-3xl font-extrabold tracking-tight text-foreground -ml-0.5">RouteOS</h1>
+      {/* Header - Dark Theme Pill Style */}
+      <header className={`pt-12 pb-4 px-4 sticky top-0 z-40 bg-background ${activeTab === 'map' ? 'hidden sm:block' : ''}`}>
+        <div className="container max-w-lg mx-auto flex items-center justify-between">
+          
+          {/* Left: Current Store Pill */}
+          <div className="flex items-center gap-3 bg-[#1C1C1E] border border-white/5 rounded-full pl-2 pr-4 py-2 min-w-0">
+            <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0">
+              <Store size={14} className="text-white" />
             </div>
-            <div className="flex items-center gap-2 pb-1">
-              <button
-                onClick={() => { haptic(); fetchOrders(false); }}
-                disabled={loading || polling}
-                className="flex items-center justify-center w-10 h-10 rounded-full bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all ios-btn"
-              >
-                {loading ? <Loader2 size={18} className="animate-spin text-primary" /> : <RefreshCw size={18} />}
-              </button>
+            <div className="flex flex-col flex-1 min-w-0">
+              <span className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider">Loja Atual</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm font-semibold text-white truncate max-w-[130px] sm:max-w-[200px]">
+                  {storeAddress ? storeAddress.split(",")[0] : 'Sem Loja'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Right: Actions */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => { haptic(); fetchOrders(false); }}
+              disabled={loading || polling}
+              className="flex items-center justify-center w-10 h-10 rounded-full bg-[#1C1C1E] border border-white/5 text-muted-foreground hover:text-white transition-all outline-none"
+            >
+              {loading ? <Loader2 size={16} className="animate-spin text-white" /> : <RefreshCw size={16} />}
+            </button>
+            <div className="relative">
               <button
                 onClick={() => { haptic(); setShowNotifications(true); }}
-                className="relative flex items-center justify-center w-10 h-10 rounded-full bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all ios-btn"
+                className="flex items-center justify-center w-10 h-10 rounded-full bg-[#1C1C1E] border border-white/5 text-muted-foreground hover:text-white transition-all outline-none"
               >
-                <Bell size={18} />
+                <Bell size={16} />
                 {unreadCount > 0 && (
                   <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white shadow-sm ring-2 ring-background">
                     {unreadCount > 9 ? '9+' : unreadCount}
                   </span>
                 )}
               </button>
-              <ProfileMenu />
             </div>
+            <ProfileMenu 
+              backgroundMode={backgroundMode}
+              setBackgroundMode={setBackgroundMode}
+              driverLocationName={driverLocation?.address}
+            />
           </div>
+
         </div>
       </header>
 
@@ -1474,13 +1536,13 @@ const Index = () => {
                         if (idx >= 0) {
                           const updated = [...prev];
                           updated[idx] = { ...updated[idx], orders: [...updated[idx].orders, orderToAdd] };
-                          (supabase as any).from("courier_routes").update({ orders: updated[idx].orders }).eq("id", updated[idx].id).then(() => {});
+                          (supabase as any).from("courier_routes").update({ orders: updated[idx].orders }).eq("id", updated[idx].id).then(() => { });
                           return updated;
                         }
                         const newRoute: CourierRoute = { id: generateId(), name: driverName, orders: [orderToAdd], startLat: storeLat, startLng: storeLng, createdAt: new Date().toISOString() };
                         (supabase as any).from("courier_routes").insert({
                           id: newRoute.id, name: newRoute.name, orders: newRoute.orders, start_lat: newRoute.startLat, start_lng: newRoute.startLng
-                        }).then(() => {});
+                        }).then(() => { });
                         return [...prev, newRoute];
                       });
                       setNoContactOrders(prev => prev.filter(x => x.id !== nc.id));
@@ -1502,7 +1564,7 @@ const Index = () => {
               <FlaskConical size={20} className="text-purple-500" />
               <h2 className="font-semibold text-foreground text-lg">Ambiente de Testes</h2>
             </div>
-            
+
             <div className="space-y-4">
               <h3 className="font-medium text-sm text-foreground">🌍 Localização da Loja (Manual/Coords)</h3>
               <p className="text-xs text-muted-foreground">Mude a coordenada base da loja para simular as entregas a partir de outro local geográfico exato.</p>
@@ -1547,92 +1609,36 @@ const Index = () => {
         {/* ── Main queue view ── */}
         {!needsAuth && !checkingAuth && activeTab === "queue" && (
           <>
-            {/* ── Location info card (store + driver) ── */}
-            <div className="glass-card rounded-xl p-3 space-y-2">
-              {/* Store address */}
-              <div className="flex items-center gap-2">
-                <Store size={13} className="text-primary flex-shrink-0" />
-                <div className="flex-1 min-w-0">
-                  {editingStoreAddr ? (
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        autoFocus
-                        value={storeAddrInput}
-                        onChange={e => setStoreAddrInput(e.target.value)}
-                        onKeyDown={e => { if (e.key === "Enter") saveStoreAddress(storeAddrInput); if (e.key === "Escape") setEditingStoreAddr(false); }}
-                        placeholder="Ex: Rua das Flores, 123 – Centro, SP"
-                        className="flex-1 bg-input text-sm text-foreground rounded-md px-2 py-1 outline-none border border-border focus:border-primary"
-                      />
-                      <button onClick={() => saveStoreAddress(storeAddrInput)} className="p-1 text-emerald-400 hover:text-emerald-300"><CheckIcon size={14} /></button>
-                      <button onClick={() => setEditingStoreAddr(false)} className="p-1 text-muted-foreground hover:text-foreground"><X size={14} /></button>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="text-xs text-foreground font-medium truncate">
-                        {storeAddress ?? <span className="text-muted-foreground italic">Endereço da loja não configurado</span>}
-                      </span>
-                      {isAdmin && (
-                        <button
-                          onClick={() => { setStoreAddrInput(storeAddress ?? ""); setEditingStoreAddr(true); }}
-                          className="flex-shrink-0 text-muted-foreground hover:text-primary transition-colors"
-                          title="Editar endereço da loja"
-                        >
-                          <Edit2 size={11} />
-                        </button>
-                      )}
-                    </div>
-                  )}
-                  <p className="text-[10px] text-muted-foreground mt-0.5">Loja</p>
+            {/* ── Today's Earnings (Motoboy) - ALWAYS VISIBLE AT TOP ── */}
+            <div className="relative rounded-[1.25rem] p-4 flex items-center justify-between shadow-xl shadow-black/20 border border-white/5 bg-[#1C1C1E] mb-4 overflow-hidden">
+              {/* Subtle blue accent background glow */}
+              <div className="absolute left-0 top-0 bottom-0 w-20 bg-blue-500/5 blur-xl pointer-events-none" />
+              
+              <div className="flex items-center gap-4 relative z-10">
+                <div className="w-10 h-8 rounded-[8px] flex items-center justify-center text-[#1E90FF] bg-[#1E90FF]/10 shadow-inner ring-1 ring-[#1E90FF]/20">
+                  <Wallet size={18} fill="currentColor" strokeWidth={0} />
+                </div>
+                <div>
+                  <h2 className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest leading-none mb-1">
+                    {isAdmin ? "Faturamento de Hoje" : "Ganhos de Hoje"}
+                  </h2>
+                  <p className="text-xl font-bold text-white tracking-tight leading-none">
+                    R$ {(driverTodayStats.earningsCents / 100).toFixed(2).replace(".", ",")}
+                  </p>
                 </div>
               </div>
 
-              {/* Driver current location */}
-              {isDriver && (
-                <div className="flex flex-col gap-2 border-t border-border/50 pt-2">
-                  <div className="flex items-center gap-2">
-                    <MapPin size={13} className="text-emerald-400 flex-shrink-0 animate-pulse" />
-                    <div className="flex-1 min-w-0">
-                      <span className="text-xs text-foreground font-medium truncate block">
-                        {driverLocation?.address ?? (
-                          <span className="text-muted-foreground italic">Obtendo localização...</span>
-                        )}
-                      </span>
-                      <p className="text-[10px] text-muted-foreground mt-0.5">
-                        Sua localização atual
-                        {driverLocation?.timestamp && (
-                          <> · atualizado às {new Date(driverLocation.timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</>
-                        )}
-                      </p>
-                    </div>
-                  </div>
-                  
-                  {/* Background tracking toggle */}
-                  <div className="flex items-center justify-between bg-white/5 rounded-lg p-2 mt-1">
-                    <div className="flex items-center gap-2">
-                      <Radio size={12} className={backgroundMode ? "text-emerald-500 animate-pulse" : "text-muted-foreground"} />
-                      <span className="text-[10px] font-bold text-foreground">Modo Background</span>
-                    </div>
-                    <button
-                      onClick={() => { haptic(); setBackgroundMode(!backgroundMode); }}
-                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
-                        backgroundMode ? 'bg-emerald-500' : 'bg-white/10'
-                      }`}
-                    >
-                      <span
-                        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                          backgroundMode ? 'translate-x-[18px]' : 'translate-x-[2px]'
-                        }`}
-                      />
-                    </button>
-                  </div>
-                  {backgroundMode && (
-                    <p className="text-[9px] text-emerald-500/80 font-medium px-1">
-                      Mantenha o app aberto (mesmo bloqueado) para garantir o rastreio.
-                    </p>
-                  )}
-                </div>
-              )}
+              <div className="flex flex-col items-end relative z-10">
+                <span className="text-[11px] font-semibold text-muted-foreground mb-1 leading-none">
+                  Entregas
+                </span>
+                <span className="text-xl font-bold text-white tracking-tight leading-none">
+                  {driverTodayStats.deliveries}
+                </span>
+              </div>
             </div>
+
+
 
             {/* ── Retentativas (No Contact) ── */}
             {noContactOrders.length > 0 && (
@@ -1655,33 +1661,32 @@ const Index = () => {
 
             {/* ── Active Routes (Motoboys) ── */}
             {(() => {
-              const visibleRoutes = courierRoutes.filter(r => 
-                r.orders.some(o => !o.confirmed) && 
+              const visibleRoutes = courierRoutes.filter(r =>
+                r.orders.some(o => !o.confirmed) &&
                 (!isDriver || r.name.toLowerCase() !== driver?.name.toLowerCase())
               );
-              
+
               if (visibleRoutes.length === 0) return null;
-              
+
               return (
-                <div className="space-y-2 mt-4">
-                  <div className="pl-2">
+                <div className="mt-4">
+                  <div className="pl-2 mb-2">
                     <h2 className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest">Motoboys em Rota</h2>
                   </div>
-                  <div className="glass-card rounded-2xl overflow-hidden divide-y divide-border/50">
+                  {/* Horizontal Scroll wrapper */}
+                  <div className="flex overflow-x-auto gap-3 pb-3 px-1 scrollbar-none [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                     {visibleRoutes.map(r => {
                       const activeCount = r.orders.filter(o => !o.confirmed).length;
                       return (
-                        <button key={r.id} onClick={() => { haptic(); setActiveTab(r.id); }} className="w-full flex items-center justify-between p-4 bg-white/5 hover:bg-white/10 active:bg-white/15 transition-colors ios-btn border-none">
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-xl bg-primary/20 flex items-center justify-center shadow-inner overflow-hidden">
-                              {driverEmojis[r.name] ? <AppleEmoji name={driverEmojis[r.name]} size={24} /> : <Bike size={18} className="text-primary" />}
-                            </div>
-                            <div className="text-left">
-                              <p className="font-bold text-foreground text-[15px]">{r.name}</p>
-                              <p className="text-xs text-muted-foreground">{activeCount} pedido(s) a caminho</p>
-                            </div>
+                        <button key={r.id} onClick={() => { haptic(); setActiveTab(r.id); }} className="flex-shrink-0 w-[240px] flex items-center gap-3 p-3 bg-white/5 hover:bg-white/10 active:bg-white/15 active:scale-95 transition-all rounded-[1.25rem] border border-white/5 text-left outline-none">
+                          <div className="w-12 h-12 rounded-[14px] bg-primary/10 flex items-center justify-center flex-shrink-0 overflow-hidden shadow-inner">
+                            {driverEmojis[r.name] ? <AppleEmoji name={driverEmojis[r.name]} size={28} /> : <Bike size={20} className="text-primary" />}
                           </div>
-                          <ChevronRight size={16} className="text-muted-foreground" />
+                          <div className="flex-1 min-w-0">
+                            <p className="font-bold text-white text-[15px] truncate">{r.name}</p>
+                            <p className="text-xs text-white/50 truncate mt-0.5">{activeCount} pedido(s) em rota</p>
+                          </div>
+                          <ChevronRight size={16} className="text-white/30 flex-shrink-0" />
                         </button>
                       )
                     })}
@@ -1730,17 +1735,29 @@ const Index = () => {
             {/* Orders list */}
             {unconfirmedOrders.length > 0 && (
               <>
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between mb-4 mt-2 px-1">
                   <div className="flex items-center gap-2">
-                    <Package size={16} className="text-primary" />
-                    <h2 className="font-semibold text-foreground">{unconfirmedOrders.length} pedido(s) disponível(is)</h2>
+                    <div className="w-2.5 h-2.5 rounded-full bg-[#1E90FF]" style={{ boxShadow: '0 0 10px rgba(30,144,255,0.8)' }} />
+                    <h2 className="text-[17px] font-bold text-white tracking-tight">Fila de Pedidos</h2>
                   </div>
-                  <button
-                    onClick={selectAll}
-                    className="text-xs px-2.5 py-1 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all"
-                  >
-                    {selectedIds.size === unconfirmedOrders.length ? "Desmarcar todos" : "Selecionar todos"}
-                  </button>
+                  <div className="flex items-center gap-4">
+                    <span className="text-[13px] font-medium text-muted-foreground mr-1">
+                      {unconfirmedOrders.length} novos
+                    </span>
+                    <button
+                      onClick={() => setSortByDelay(!sortByDelay)}
+                      className={`text-[11px] font-semibold uppercase tracking-wider transition-colors border px-2 py-1 rounded ${sortByDelay ? 'text-white bg-red-500/20 border-red-500/50' : 'text-muted-foreground border-white/10 hover:text-white'}`}
+                      title="Ordenar do mais atrasado para o mais recente"
+                    >
+                      {sortByDelay ? "🔥 Atrasados" : "⏳ Por Atraso"}
+                    </button>
+                    <button
+                      onClick={selectAll}
+                      className="text-[11px] font-semibold text-[#1E90FF] uppercase tracking-wider hover:text-white transition-colors ml-1"
+                    >
+                      {selectedIds.size === unconfirmedOrders.length ? "Desmarcar" : "Selecionar"}
+                    </button>
+                  </div>
                 </div>
 
                 <div className={`space-y-3 ${selectedOrders.length > 0 ? "pb-40" : ""}`}>
@@ -1759,6 +1776,47 @@ const Index = () => {
                 </div>
               </>
             )}
+
+        {/* Modal: Edit Store Address */}
+        {editingStoreAddr && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+            <div className="bg-[#1C1C1E] border border-white/10 p-5 rounded-[1.75rem] w-full max-w-sm shadow-2xl animate-scale-in">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center">
+                  <Store size={20} className="text-primary" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white leading-tight">Endereço da Loja</h3>
+                  <p className="text-xs text-muted-foreground">Ponto de partida das entregas</p>
+                </div>
+              </div>
+              
+              <input
+                autoFocus
+                value={storeAddrInput}
+                onChange={e => setStoreAddrInput(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") { saveStoreAddress(storeAddrInput); setEditingStoreAddr(false); } if (e.key === "Escape") setEditingStoreAddr(false); }}
+                placeholder="Ex: Rua das Flores, 123 – Centro"
+                className="w-full bg-black/40 text-sm text-white placeholder-white/30 rounded-xl px-4 py-3.5 outline-none border border-white/10 focus:border-primary transition-colors mb-5"
+              />
+              
+              <div className="flex items-center justify-end gap-3">
+                <button
+                  onClick={() => setEditingStoreAddr(false)}
+                  className="px-4 py-2.5 rounded-xl text-sm font-semibold text-white/70 hover:text-white hover:bg-white/5 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => { saveStoreAddress(storeAddrInput); setEditingStoreAddr(false); }}
+                  className="px-5 py-2.5 rounded-xl text-sm font-semibold bg-primary text-primary-foreground hover:bg-primary/90 transition-colors shadow-lg"
+                >
+                  Salvar
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
             {/* Route / Assign actions */}
             {selectedOrders.length > 0 && (
@@ -1822,24 +1880,23 @@ const Index = () => {
         </div>
       )}
 
-      {/* ── Apple Style Floating Bottom Nav ── */}
+      {/* ── Dark Theme Floating Bottom Nav ── */}
       {!needsAuth && !checkingAuth && (
         <div className="fixed bottom-6 inset-x-0 z-50 px-4 flex justify-center pointer-events-none">
-          <div className="glass-nav rounded-[2rem] flex p-1.5 gap-1 shadow-2xl overflow-x-auto max-w-full pointer-events-auto hide-scrollbar border border-white/10 relative">
-            
+          <div className="bg-[#111111] backdrop-blur-xl rounded-[2rem] flex items-center justify-between px-2 py-2 shadow-2xl overflow-x-auto max-w-sm w-full pointer-events-auto hide-scrollbar border border-white/5 relative">
+
             <button
               onClick={() => { haptic(); setActiveTab("queue"); }}
-              className={`flex flex-col items-center justify-center min-w-[76px] px-3 py-2 rounded-[1.5rem] transition-all ios-btn border-none ${activeTab === "queue" ? "bg-primary/20 text-primary shadow-sm" : "text-muted-foreground hover:bg-secondary/50"}`}
+              className={`flex items-center justify-center w-12 h-12 rounded-full transition-all outline-none border-none relative ${activeTab === "queue" ? "bg-[#2D2D2D] text-white" : "text-muted-foreground hover:text-white/80"}`}
             >
-              <div className="relative">
-                <Package size={22} className="mb-0.5" />
+              <div className="relative flex items-center justify-center w-full h-full">
+                <Package size={20} />
                 {unconfirmedOrders.length > 0 && (
-                  <span className="absolute -top-1.5 -right-2.5 w-4 h-4 rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center shadow-md">
-                    {unconfirmedOrders.length}
+                  <span className="absolute top-2 right-2 w-3.5 h-3.5 rounded-full bg-[#FF7F00] text-white text-[9px] font-bold flex items-center justify-center shadow-md border-2 border-[#111111]">
+                    {unconfirmedOrders.length > 9 ? '9+' : unconfirmedOrders.length}
                   </span>
                 )}
               </div>
-              <span className="text-[10px] font-semibold tracking-tight mt-0.5">Fila</span>
             </button>
 
             {isDriver && driver && (
@@ -1849,55 +1906,55 @@ const Index = () => {
                   const myRoute = courierRoutes.find(r => r.name === driver.name && r.orders.some(o => !o.confirmed));
                   setActiveTab(myRoute ? myRoute.id : "minha_rota");
                 }}
-                className={`flex flex-col items-center justify-center min-w-[76px] px-3 py-2 rounded-[1.5rem] transition-all ios-btn border-none ${
-                    (courierRoutes.some(r => r.name === driver.name && r.id === activeTab) || activeTab === "minha_rota") ? "bg-primary/20 text-primary shadow-sm" : "text-muted-foreground hover:bg-secondary/50"
-                }`}
+                className={`flex items-center justify-center w-12 h-12 rounded-full transition-all outline-none border-none relative ${(courierRoutes.some(r => r.name === driver.name && r.id === activeTab) || activeTab === "minha_rota") ? "bg-[#2D2D2D] text-white" : "text-muted-foreground hover:text-white/80"}`}
               >
-                <div className="relative">
+                <div className="relative flex items-center justify-center w-full h-full">
                   {driverEmojis[driver.name] ? (
-                    <div className="mb-0.5"><AppleEmoji name={driverEmojis[driver.name]} size={22} /></div>
+                    <AppleEmoji name={driverEmojis[driver.name]} size={20} />
                   ) : (
-                    <Bike size={22} className="mb-0.5" />
+                    <Bike size={20} />
                   )}
                   {(() => {
                     const myRoute = courierRoutes.find(r => r.name === driver.name && r.orders.some(o => !o.confirmed));
                     const badgeCount = myRoute ? myRoute.orders.filter(o => !o.confirmed).length : 0;
                     return badgeCount > 0 ? (
-                      <span className="absolute -top-1.5 -right-2.5 w-4 h-4 rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center shadow-md">
-                        {badgeCount}
+                      <span className="absolute top-2 right-2 w-3.5 h-3.5 rounded-full bg-[#34C759] text-white text-[9px] font-bold flex items-center justify-center shadow-md border-2 border-[#111111]">
+                        {badgeCount > 9 ? '9+' : badgeCount}
                       </span>
                     ) : null;
                   })()}
                 </div>
-                <span className="text-[10px] font-semibold tracking-tight mt-0.5">Minha Rota</span>
               </button>
             )}
 
             <button
               onClick={() => { haptic(); setActiveTab("ranking"); }}
-              className={`flex flex-col items-center justify-center min-w-[76px] px-3 py-2 rounded-[1.5rem] transition-all ios-btn border-none ${activeTab === "ranking" ? "bg-primary/20 text-primary shadow-sm" : "text-muted-foreground hover:bg-secondary/50"}`}
+              className={`flex items-center justify-center w-12 h-12 rounded-full transition-all outline-none border-none relative ${activeTab === "ranking" ? "bg-[#2D2D2D] text-white" : "text-muted-foreground hover:text-white/80"}`}
             >
-              <Trophy size={22} className="mb-0.5" />
-              <span className="text-[10px] font-semibold tracking-tight mt-0.5">Ranking</span>
+              <div className="relative flex items-center justify-center w-full h-full">
+                <Trophy size={20} />
+              </div>
             </button>
 
             {isAdmin && (
               <button
                 onClick={() => { haptic(); setActiveTab("map"); }}
-                className={`flex flex-col items-center justify-center min-w-[76px] px-3 py-2 rounded-[1.5rem] transition-all ios-btn ${activeTab === "map" ? "bg-primary/20 text-primary shadow-sm" : "text-muted-foreground hover:bg-secondary/50"}`}
+                className={`flex items-center justify-center w-12 h-12 rounded-full transition-all outline-none border-none relative ${activeTab === "map" ? "bg-[#2D2D2D] text-white" : "text-muted-foreground hover:text-white/80"}`}
               >
-                <MapPin size={22} className="mb-0.5" />
-                <span className="text-[10px] font-semibold tracking-tight mt-0.5">Mapa</span>
+                <div className="relative flex items-center justify-center w-full h-full">
+                  <MapPin size={20} />
+                </div>
               </button>
             )}
 
             {isAdmin && (
               <button
                 onClick={() => { haptic(); setActiveTab("dev_panel"); }}
-                className={`flex flex-col items-center justify-center min-w-[76px] px-3 py-2 rounded-2xl transition-all ios-btn ${activeTab === "dev_panel" ? "bg-purple-500/20 text-purple-400 shadow-sm" : "text-muted-foreground hover:bg-secondary/50"}`}
+                className={`flex items-center justify-center w-12 h-12 rounded-full transition-all outline-none border-none relative ${activeTab === "dev_panel" ? "bg-[#2D2D2D] text-white" : "text-muted-foreground hover:text-white/80"}`}
               >
-                <FlaskConical size={22} className="mb-0.5" />
-                <span className="text-[10px] font-semibold tracking-tight mt-0.5">Testes</span>
+                <div className="relative flex items-center justify-center w-full h-full">
+                  <FlaskConical size={20} />
+                </div>
               </button>
             )}
           </div>
