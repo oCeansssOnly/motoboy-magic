@@ -8,7 +8,7 @@ export interface AppNotification {
   timestamp: number;
 }
 
-const STORAGE_KEY = "@routeos_notifications";
+const STORAGE_KEY = "@isync_notifications";
 
 export function useNotifications() {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -32,8 +32,8 @@ export function useNotifications() {
   useEffect(() => {
     loadNotifications();
     const handleStorage = () => loadNotifications();
-    window.addEventListener("routeos_notification", handleStorage);
-    return () => window.removeEventListener("routeos_notification", handleStorage);
+    window.addEventListener("isync_notification", handleStorage);
+    return () => window.removeEventListener("isync_notification", handleStorage);
   }, [loadNotifications]);
 
   const addNotification = useCallback((type: AppNotification["type"], title: string, message: string) => {
@@ -41,7 +41,7 @@ export function useNotifications() {
     setNotifications(prev => {
       const updated = [newNotif, ...prev];
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-      window.dispatchEvent(new Event("routeos_notification"));
+      window.dispatchEvent(new Event("isync_notification"));
       return updated;
     });
 

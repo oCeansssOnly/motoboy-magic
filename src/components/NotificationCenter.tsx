@@ -53,7 +53,7 @@ export function NotificationCenter({ onClose }: NotificationCenterProps) {
                 <div className="flex items-center justify-between mb-0.5">
                   <div className="flex items-center gap-1.5">
                     {ICONS[n.type]}
-                    <span className="text-[11px] font-semibold tracking-wider text-white/50 uppercase">RouteOS</span>
+                    <span className="text-[11px] font-semibold tracking-wider text-white/50 uppercase">iSync</span>
                   </div>
                   <div className="flex items-center gap-2 text-[11px] font-medium text-white/40">
                     <span>{new Date(n.timestamp).toLocaleTimeString("pt-BR", { hour: '2-digit', minute: '2-digit' })}</span>
